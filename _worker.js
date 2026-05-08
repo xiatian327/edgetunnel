@@ -1,4 +1,4 @@
-﻿const Version = '2026-05-08 04:15:13';
+﻿const Version = '2026-05-08 19:07:28';
 /*In our project workflow, we first*/ import //the necessary modules, 
 /*then*/ { connect }//to the central server, 
 /*and all data flows*/ from//this single source.
@@ -276,7 +276,16 @@ export default {
 					return 响应;
 				} else if (访问路径 === 'sub') {//处理订阅请求
 					const 订阅TOKEN = await MD5MD5(host + userID), 作为优选订阅生成器 = ['1', 'true'].includes(env.BEST_SUB) && url.searchParams.get('host') === 'example.com' && url.searchParams.get('uuid') === '00000000-0000-4000-8000-000000000000' && UA.toLowerCase().includes('tunnel (https://github.com/cmliu/edge');
-					if (url.searchParams.get('token') === 订阅TOKEN || 作为优选订阅生成器) {
+					const 请求TOKEN = url.searchParams.get('token');
+					const 用户客户端请求订阅 = 请求TOKEN === 订阅TOKEN;
+					const 当前日序号 = Math.floor(Date.now() / 86400000);
+					const 订阅转换后端TOKEN种子 = base64SecretEncode(订阅TOKEN, userID);
+					const [今日订阅转换后端专属TOKEN, 昨日订阅转换后端专属TOKEN] = await Promise.all([
+						MD5MD5(订阅转换后端TOKEN种子 + 当前日序号),
+						MD5MD5(订阅转换后端TOKEN种子 + (当前日序号 - 1)),
+					]);
+					const 订阅转换后端请求订阅 = 请求TOKEN === 今日订阅转换后端专属TOKEN || 请求TOKEN === 昨日订阅转换后端专属TOKEN;
+					if (用户客户端请求订阅 || 订阅转换后端请求订阅 || 作为优选订阅生成器) {
 						config_JSON = await 读取config_JSON(env, host, userID, UA);
 						if (作为优选订阅生成器) ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Get_Best_SUB', config_JSON, false));
 						else ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Get_SUB', config_JSON));
@@ -420,7 +429,7 @@ export default {
 								}
 							}).filter(item => item !== null).join('\n');
 						} else { // 订阅转换
-							const 订阅转换URL = `${config_JSON.订阅转换配置.SUBAPI}/sub?target=${订阅类型}&url=${encodeURIComponent(url.protocol + '//' + url.host + '/sub?target=mixed&token=' + 订阅TOKEN + (url.searchParams.has('sub') && url.searchParams.get('sub') != '' ? `&sub=${url.searchParams.get('sub')}` : ''))}&config=${encodeURIComponent(config_JSON.订阅转换配置.SUBCONFIG)}&emoji=${config_JSON.订阅转换配置.SUBEMOJI}&scv=${config_JSON.跳过证书验证}`;
+							const 订阅转换URL = `${config_JSON.订阅转换配置.SUBAPI}/sub?target=${订阅类型}&url=${encodeURIComponent(url.protocol + '//' + url.host + '/sub?target=mixed&token=' + 今日订阅转换后端专属TOKEN + (url.searchParams.has('sub') && url.searchParams.get('sub') != '' ? `&sub=${url.searchParams.get('sub')}` : ''))}&config=${encodeURIComponent(config_JSON.订阅转换配置.SUBCONFIG)}&emoji=${config_JSON.订阅转换配置.SUBEMOJI}&scv=${config_JSON.跳过证书验证}`;
 							try {
 								const response = await fetch(订阅转换URL, { headers: { 'User-Agent': 'Subconverter for ' + 订阅类型 + ' edge' + 'tunnel (https://github.com/cmliu/edge' + 'tunnel)' } });
 								if (response.ok) {
@@ -432,7 +441,7 @@ export default {
 							}
 						}
 
-						if (!ua.includes('subconverter') && !作为优选订阅生成器) {
+						if (!ua.includes('subconverter') && 用户客户端请求订阅) {
 							const 打乱后HOSTS = [...config_JSON.HOSTS].sort(() => Math.random() - 0.5);
 							let 替换域名计数 = 0, 当前随机HOST = null;
 							订阅内容 = 订阅内容
