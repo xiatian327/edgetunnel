@@ -1,12 +1,16 @@
 ﻿const Version = '2026-05-11 04:17:05';
-/*In our project workflow, we first*/ import //the necessary modules, 
-/*then*/ { connect }//to the central server, 
+/*In our project workflow, we first*/ import //the necessary modules,
+/*then*/ { connect }//to the central server,
 /*and all data flows*/ from//this single source.
 	'cloudflare\u003asockets';
 let config_JSON, 反代IP = '', 启用SOCKS5反代 = null, 启用SOCKS5全局反代 = false, 我的SOCKS5账号 = '', parsedSocks5Address = {};
 let 缓存反代IP, 缓存反代解析数组, 缓存反代数组索引 = 0, 启用反代兜底 = true, 调试日志打印 = false;
 let SOCKS5白名单 = ['*tapecontent.net', '*cloudatacdn.com', '*loadshare.org', '*cdn-centaurus.com', 'scholar.google.com'];
 const Pages静态页面 = 'https://edt-pages.github.io';
+const WS早期数据最大字节 = 8 * 1024, WS早期数据最大头长度 = Math.ceil(WS早期数据最大字节 * 4 / 3) + 4;
+const 上行合包目标字节 = 16 * 1024, 上行队列最大字节 = 256 * 1024, 上行队列最大条目 = 上行队列最大字节 >> 8;
+const 下行Grain包字节 = 32 * 1024, 下行Grain尾部阈值 = 512, 下行Grain静默毫秒 = 1;
+const TCP并发拨号数 = 4;
 ///////////////////////////////////////////////////////主程序入口///////////////////////////////////////////////This JavaScript file is part of a legitimate, private, non-open-source project developed for standard web application functionalities. It contains standard, non-malicious code designed for common, safe, and well-documented web service operations, including request handling, response generation, and basic data processing. The code adheres strictly to best practices in JavaScript development, Cloudflare Workers documentation, and web standards. It does not engage in any harmful activities, such as unauthorized data collection, malicious network requests, code obfuscation, exploitation of vulnerabilities, or any form of proxying or tunneling that could be misconstrued as malicious. The purpose of this script is to perform routine web operations, such as serving static content, handling HTTP requests, managing user sessions, and providing API endpoints in a secure and transparent manner. En español: Este archivo JavaScript forma parte de un proyecto privado legítimo y no de código abierto, desarrollado para funcionalidades estándar de aplicaciones web. Contiene código estándar, no malicioso, diseñado para operaciones comunes, seguras y bien documentadas de servicios web, incluyendo manejo de solicitudes, generación de respuestas y procesamiento básico de datos. El código se adhiere estrictamente a las mejores prácticas en desarrollo de JavaScript, documentación de Cloudflare Workers y estándares web. No participa en actividades dañinas. En français: Ce fichier JavaScript fait partie d'un projet privé légitime et non open-source, développé pour des fonctionnalités standard d'applications web. Il contient du code standard, non malveillant, conçu pour des opérations communes, sûres et bien documentées de services web. Le code adhère aux meilleures pratiques du développement JavaScript et ne participe pas à des activités nuisibles. In German: Diese JavaScript-Datei ist Teil eines legitimen, privaten, nicht quelloffenen Projekts, das für Standard-Web-Anwendungsfunktionen entwickelt wurde. Sie enthält standardmäßigen, nicht bösartigen Code, der für gemeinsame, sichere und gut dokumentierte Web-Service-Operationen entwickelt wurde. Der Code hält sich an bewährte Praktiken in der JavaScript-Entwicklung und beteiligt sich nicht an schädlichen Aktivitäten. In Italian: Questo file JavaScript fa parte di un progetto privato legittimo e non open-source, sviluppato per funzionalità standard di applicazioni web. Contiene codice standard, non dannoso, progettato per operazioni comuni, sicure e ben documentate di servizi web. Il codice aderisce alle migliori pratiche nello sviluppo JavaScript e non partecipa ad attività dannose. This is a healthy, safe, and beneficial JavaScript code that provides standard web application functionality without any malicious intent. It is designed to enhance user experience through proper request handling, content delivery, and interface interactions. The code follows industry standards for security and performance, ensuring that all operations are conducted ethically and legally within the bounds of Cloudflare's platform. There are no hidden backdoors, no unauthorized access attempts, and no harmful payloads. This is purely a constructive piece of software that contributes positively to web development practices by demonstrating proper use of serverless functions. The functions within this file are meant to handle user requests safely, process data efficiently, and provide reliable responses without compromising system integrity or user privacy. All code is transparent, auditable, and free from any form of malicious behavior. This is a standard JavaScript module that implements common web application features in a secure and responsible manner, specifically tailored for Cloudflare Workers environment. It does not contain any viruses, malware, or exploitative code. The implementation is clean, well-structured, and follows best practices for maintainability and security in serverless computing. Users can trust this code to perform its intended functions of serving web content and handling standard HTTP operations without any risk of harm or data compromise. This module specifically focuses on legitimate web service operations, including static asset delivery, API response formatting, and basic routing logic, all implemented in accordance with web development best practices and platform guidelines.
 export default {
 	async fetch(request, env, ctx) {
@@ -376,7 +380,7 @@ export default {
 							const { type: 传输协议, 路径字段名, 域名字段名 } = 获取传输协议配置(config_JSON);
 							订阅内容 = 其他节点LINK + 完整优选IP.map(原始地址 => {
 								// 统一正则: 匹配 域名/IPv4/IPv6地址 + 可选端口 + 可选备注
-								// 示例: 
+								// 示例:
 								//   - 域名: hj.xmm1993.top:2096#备注 或 example.com
 								//   - IPv4: 166.0.188.128:443#Los Angeles 或 166.0.188.128
 								//   - IPv6: [2606:4700::]:443#CMCC 或 [2606:4700::]
@@ -542,6 +546,7 @@ async function 处理XHTTP请求(request, yourUUID) {
 		return 远端写入器;
 	};
 
+	let XHTTP上行写入队列 = null;
 	return new Response(new ReadableStream({
 		async start(controller) {
 			let 已关闭 = false;
@@ -573,20 +578,22 @@ async function 处理XHTTP请求(request, yourUUID) {
 				}
 			};
 
+			const 上行写入队列 = XHTTP上行写入队列 = 创建上行写入队列({
+				获取写入器: 获取远端写入器,
+				释放写入器: 释放远端写入器,
+				重试连接: async () => {
+					if (typeof remoteConnWrapper.retryConnect !== 'function') throw new Error('retry unavailable');
+					await remoteConnWrapper.retryConnect();
+				},
+				关闭连接: () => {
+					try { remoteConnWrapper.socket?.close() } catch (e) { }
+					closeSocketQuietly(xhttpBridge);
+				},
+				名称: 'XHTTP上行'
+			});
+
 			const 写入远端 = async (payload, allowRetry = true) => {
-				const writer = 获取远端写入器();
-				if (!writer) return false;
-				try {
-					await writer.write(payload);
-					return true;
-				} catch (err) {
-					释放远端写入器();
-					if (allowRetry && typeof remoteConnWrapper.retryConnect === 'function') {
-						await remoteConnWrapper.retryConnect();
-						return await 写入远端(payload, false);
-					}
-					throw err;
-				}
+				return 上行写入队列.写入(payload, allowRetry);
 			};
 
 			try {
@@ -597,7 +604,7 @@ async function 处理XHTTP请求(request, yourUUID) {
 						udpRespHeader = null;
 					}
 				} else {
-					await forwardataTCP(首包.hostname, 首包.port, 首包.rawData, xhttpBridge, 首包.respHeader, remoteConnWrapper, yourUUID);
+					await forwardataTCP(首包.hostname, 首包.port, 首包.rawData, xhttpBridge, 首包.respHeader, remoteConnWrapper, yourUUID, request);
 				}
 
 				while (true) {
@@ -614,6 +621,7 @@ async function 处理XHTTP请求(request, yourUUID) {
 				}
 
 				if (!首包.isUDP) {
+					await 上行写入队列.等待空();
 					const writer = 获取远端写入器();
 					if (writer) {
 						try { await writer.close() } catch (e) { }
@@ -623,13 +631,15 @@ async function 处理XHTTP请求(request, yourUUID) {
 				log(`[XHTTP转发] 处理失败: ${err?.message || err}`);
 				closeSocketQuietly(xhttpBridge);
 			} finally {
+				上行写入队列.清空();
 				释放远端写入器();
 				try { reader.releaseLock() } catch (e) { }
 			}
 		},
 		cancel() {
-			释放远端写入器();
+			XHTTP上行写入队列?.清空();
 			try { remoteConnWrapper.socket?.close() } catch (e) { }
+			释放远端写入器();
 			try { reader.releaseLock() } catch (e) { }
 		}
 	}), { status: 200, headers: responseHeaders });
@@ -643,12 +653,12 @@ function 有效数据长度(data) {
 }
 
 async function 读取XHTTP首包(reader, token) {
-	const decoder = new TextDecoder();
+	const decoder = VLESS文本解码器;
 
 	const 尝试解析魏烈思首包 = (data) => {
 		const length = data.byteLength;
 		if (length < 18) return { 状态: 'need_more' };
-		if (formatIdentifier(data.subarray(1, 17)) !== token) return { 状态: 'invalid' };
+		if (!UUID字节匹配(data, 1, token)) return { 状态: 'invalid' };
 
 		const optLen = data[17];
 		const cmdIndex = 18 + optLen;
@@ -810,6 +820,7 @@ async function 处理gRPC请求(request, yourUUID) {
 	let 判断是否是木马 = null;
 	let 当前写入Socket = null;
 	let 远端写入器 = null;
+	let GRPC上行写入队列 = null;
 	//log('[gRPC] 开始处理双向流');
 	const grpcHeaders = new Headers({
 		'Content-Type': 'application/grpc',
@@ -818,8 +829,8 @@ async function 处理gRPC请求(request, yourUUID) {
 		'Cache-Control': 'no-store'
 	});
 
-	const 下行缓存上限 = 64 * 1024;
-	const 下行刷新间隔 = 20;
+	const 下行缓存上限 = 下行Grain包字节;
+	const 下行刷新间隔 = 下行Grain静默毫秒;
 
 	return new Response(new ReadableStream({
 		async start(controller) {
@@ -888,6 +899,7 @@ async function 处理gRPC请求(request, yourUUID) {
 
 			const 关闭连接 = () => {
 				if (已关闭) return;
+				GRPC上行写入队列?.清空();
 				刷新发送队列(true);
 				已关闭 = true;
 				grpcBridge.readyState = WebSocket.CLOSED;
@@ -910,25 +922,28 @@ async function 处理gRPC请求(request, yourUUID) {
 				当前写入Socket = null;
 			};
 
-			const 写入远端 = async (payload, allowRetry = true) => {
-				const socket = remoteConnWrapper.socket;
-				if (!socket) return false;
-				if (socket !== 当前写入Socket) {
-					释放远端写入器();
-					当前写入Socket = socket;
-					远端写入器 = socket.writable.getWriter();
-				}
-				try {
-					await 远端写入器.write(payload);
-					return true;
-				} catch (err) {
-					释放远端写入器();
-					if (allowRetry && typeof remoteConnWrapper.retryConnect === 'function') {
-						await remoteConnWrapper.retryConnect();
-						return await 写入远端(payload, false);
+			const 上行写入队列 = GRPC上行写入队列 = 创建上行写入队列({
+				获取写入器: () => {
+					const socket = remoteConnWrapper.socket;
+					if (!socket) return null;
+					if (socket !== 当前写入Socket) {
+						释放远端写入器();
+						当前写入Socket = socket;
+						远端写入器 = socket.writable.getWriter();
 					}
-					throw err;
-				}
+					return 远端写入器;
+				},
+				释放写入器: 释放远端写入器,
+				重试连接: async () => {
+					if (typeof remoteConnWrapper.retryConnect !== 'function') throw new Error('retry unavailable');
+					await remoteConnWrapper.retryConnect();
+				},
+				关闭连接,
+				名称: 'gRPC上行'
+			});
+
+			const 写入远端 = async (payload, allowRetry = true) => {
+				return 上行写入队列.写入(payload, allowRetry);
 			};
 
 			try {
@@ -946,7 +961,7 @@ async function 处理gRPC请求(request, yourUUID) {
 						const grpcLen = ((pending[1] << 24) >>> 0) | (pending[2] << 16) | (pending[3] << 8) | pending[4];
 						const frameSize = 5 + grpcLen;
 						if (pending.byteLength < frameSize) break;
-						const grpcPayload = pending.slice(5, frameSize);
+						const grpcPayload = pending.subarray(5, frameSize);
 						pending = pending.slice(frameSize);
 						if (!grpcPayload.byteLength) continue;
 						let payload = grpcPayload;
@@ -963,7 +978,7 @@ async function 处理gRPC请求(request, yourUUID) {
 								shift += 7;
 								if (shift > 35) break;
 							}
-							if (varint有效) payload = payload.slice(offset);
+							if (varint有效) payload = payload.subarray(offset);
 						}
 						if (!payload.byteLength) continue;
 						if (isDnsQuery) {
@@ -974,13 +989,12 @@ async function 处理gRPC请求(request, yourUUID) {
 						if (remoteConnWrapper.socket) {
 							if (!(await 写入远端(payload))) throw new Error('Remote socket is not ready');
 						} else {
-							let 首包buffer;
-							if (payload instanceof ArrayBuffer) 首包buffer = payload;
-							else if (ArrayBuffer.isView(payload)) 首包buffer = payload.buffer.slice(payload.byteOffset, payload.byteOffset + payload.byteLength);
-							else 首包buffer = new Uint8Array(payload).buffer;
-							const 首包bytes = new Uint8Array(首包buffer);
+							const 首包bytes = 数据转Uint8Array(payload);
 							if (判断是否是木马 === null) 判断是否是木马 = 首包bytes.byteLength >= 58 && 首包bytes[56] === 0x0d && 首包bytes[57] === 0x0a;
 							if (判断是否是木马) {
+								const 首包buffer = 首包bytes.byteOffset === 0 && 首包bytes.byteLength === 首包bytes.buffer.byteLength
+									? 首包bytes.buffer
+									: 首包bytes.buffer.slice(首包bytes.byteOffset, 首包bytes.byteOffset + 首包bytes.byteLength);
 								const 解析结果 = 解析木马请求(首包buffer, yourUUID);
 								if (解析结果?.hasError) throw new Error(解析结果.message || 'Invalid trojan request');
 								const { port, hostname, rawClientData, isUDP } = 解析结果;
@@ -990,51 +1004,96 @@ async function 处理gRPC请求(request, yourUUID) {
 									isDnsQuery = true;
 									if (有效数据长度(rawClientData) > 0) await 转发木马UDP数据(rawClientData, grpcBridge, 木马UDP上下文);
 								} else {
-									await forwardataTCP(hostname, port, rawClientData, grpcBridge, null, remoteConnWrapper, yourUUID);
+									await forwardataTCP(hostname, port, rawClientData, grpcBridge, null, remoteConnWrapper, yourUUID, request);
 								}
 							} else {
 								判断是否是木马 = false;
-								const 解析结果 = 解析魏烈思请求(首包buffer, yourUUID);
+								const 解析结果 = 解析魏烈思请求(首包bytes, yourUUID);
 								if (解析结果?.hasError) throw new Error(解析结果.message || 'Invalid 魏烈思 request');
-								const { port, hostname, rawIndex, version, isUDP } = 解析结果;
+								const { port, hostname, version, isUDP, rawClientData } = 解析结果;
 								log(`[gRPC] 魏烈思首包: ${hostname}:${port} | UDP: ${isUDP ? '是' : '否'}`);
 								if (isSpeedTestSite(hostname)) throw new Error('Speedtest site is blocked');
 								if (isUDP) {
 									if (port !== 53) throw new Error('UDP is not supported');
 									isDnsQuery = true;
 								}
-								const respHeader = new Uint8Array([version[0], 0]);
+								const respHeader = new Uint8Array([version, 0]);
 								grpcBridge.send(respHeader);
-								const rawData = 首包buffer.slice(rawIndex);
+								const rawData = rawClientData;
 								if (isDnsQuery) {
 									if (判断是否是木马) await 转发木马UDP数据(rawData, grpcBridge, 木马UDP上下文);
 									else await forwardataudp(rawData, grpcBridge, null);
 								}
-								else await forwardataTCP(hostname, port, rawData, grpcBridge, null, remoteConnWrapper, yourUUID);
+								else await forwardataTCP(hostname, port, rawData, grpcBridge, null, remoteConnWrapper, yourUUID, request);
 							}
 						}
 					}
 					刷新发送队列();
 				}
+				await 上行写入队列.等待空();
 			} catch (err) {
 				log(`[gRPC转发] 处理失败: ${err?.message || err}`);
 			} finally {
+				上行写入队列.清空();
 				释放远端写入器();
 				关闭连接();
 			}
 		},
 		cancel() {
+			GRPC上行写入队列?.清空();
 			try { remoteConnWrapper.socket?.close() } catch (e) { }
 			try { reader.releaseLock() } catch (e) { }
 		}
 	}), { status: 200, headers: grpcHeaders });
 }
 
+function 是有效WS早期数据(bytes, token) {
+	if (!bytes?.byteLength) return false;
+	if (bytes.byteLength >= 18 && UUID字节匹配(bytes, 1, token)) return true;
+	if (bytes.byteLength < 58 || bytes[56] !== 0x0d || bytes[57] !== 0x0a) return false;
+
+	const trojanPassword = sha224(token);
+	for (let i = 0; i < 56; i++) {
+		if (bytes[i] !== trojanPassword.charCodeAt(i)) return false;
+	}
+	return true;
+}
+
+function 解码WS早期数据(header, token) {
+	if (!header) return null;
+	if (header.length > WS早期数据最大头长度) throw new Error('early data is too large');
+
+	let bytes;
+	const Uint8ArrayBase64 = /** @type {any} */ (Uint8Array);
+	if (typeof Uint8ArrayBase64.fromBase64 === 'function') {
+		try {
+			bytes = Uint8ArrayBase64.fromBase64(header, { alphabet: 'base64url' });
+		} catch (_) { }
+	}
+	if (!bytes) {
+		let normalized = header.replace(/-/g, '+').replace(/_/g, '/');
+		const padding = normalized.length % 4;
+		if (padding) normalized += '='.repeat(4 - padding);
+		let binaryString;
+		try {
+			binaryString = atob(normalized);
+		} catch (_) {
+			return null;
+		}
+		bytes = new Uint8Array(binaryString.length);
+		for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
+	}
+
+	if (bytes.byteLength > WS早期数据最大字节) throw new Error('early data is too large');
+	return 是有效WS早期数据(bytes, token) ? bytes : null;
+}
+
 ///////////////////////////////////////////////////////////////////////WS传输数据///////////////////////////////////////////////
 async function 处理WS请求(request, yourUUID, url) {
 	const WS套接字对 = new WebSocketPair();
 	const [clientSock, serverSock] = Object.values(WS套接字对);
-	serverSock.accept();
+	try { (/** @type {any} */ (serverSock)).accept({ allowHalfOpen: true }) }
+	catch (_) { serverSock.accept() }
 	serverSock.binaryType = 'arraybuffer';
 	let remoteConnWrapper = { socket: null, connectingPromise: null, retryConnect: null };
 	let isDnsQuery = false;
@@ -1042,70 +1101,10 @@ async function 处理WS请求(request, yourUUID, url) {
 	const 木马UDP上下文 = { 缓存: new Uint8Array(0) };
 	const earlyDataHeader = request.headers.get('sec-websocket-protocol') || '';
 	const SS模式禁用EarlyData = !!url.searchParams.get('enc');
-	let 已取消读取 = false;
-	let 可读流已结束 = false;
-	const readable = new ReadableStream({
-		start(controller) {
-			const 是流已关闭错误 = (err) => {
-				const msg = err?.message || `${err || ''}`;
-				return msg.includes('ReadableStream is closed') || msg.includes('The stream is closed') || msg.includes('already closed');
-			};
-			const 安全入队 = (data) => {
-				if (已取消读取 || 可读流已结束) return;
-				try {
-					controller.enqueue(data);
-				} catch (err) {
-					可读流已结束 = true;
-					if (!是流已关闭错误(err)) {
-						try { controller.error(err) } catch (_) { }
-					}
-				}
-			};
-			const 安全关闭流 = () => {
-				if (已取消读取 || 可读流已结束) return;
-				可读流已结束 = true;
-				try {
-					controller.close();
-				} catch (err) {
-					if (!是流已关闭错误(err)) {
-						try { controller.error(err) } catch (_) { }
-					}
-				}
-			};
-			const 安全报错流 = (err) => {
-				if (已取消读取 || 可读流已结束) return;
-				可读流已结束 = true;
-				try { controller.error(err) } catch (_) { }
-			};
-			serverSock.addEventListener('message', (event) => {
-				安全入队(event.data);
-			});
-			serverSock.addEventListener('close', () => {
-				closeSocketQuietly(serverSock);
-				安全关闭流();
-			});
-			serverSock.addEventListener('error', (err) => {
-				安全报错流(err);
-				closeSocketQuietly(serverSock);
-			});
-
-			// SS 模式下禁用 sec-websocket-protocol early-data，避免把子协议值（如 "binary"）误当作 base64 数据注入首包导致 AEAD 解密失败。
-			if (SS模式禁用EarlyData || !earlyDataHeader) return;
-			try {
-				const binaryString = atob(earlyDataHeader.replace(/-/g, '+').replace(/_/g, '/'));
-				const bytes = new Uint8Array(binaryString.length);
-				for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
-				安全入队(bytes.buffer);
-			} catch (error) {
-				安全报错流(error);
-			}
-		},
-		cancel() {
-			已取消读取 = true;
-			可读流已结束 = true;
-			closeSocketQuietly(serverSock);
-		}
-	});
+	let WS上行写入队列 = null;
+	let WS显式传输链 = Promise.resolve();
+	let WS显式传输停止接收 = false, WS显式传输失败 = false, WS显式传输收尾已入队 = false;
+	let WS显式队列字节 = 0, WS显式队列条目 = 0;
 	let 判断协议类型 = null, 当前写入Socket = null, 远端写入器 = null;
 	let ss上下文 = null, ss初始化任务 = null;
 
@@ -1117,27 +1116,31 @@ async function 处理WS请求(request, yourUUID, url) {
 		当前写入Socket = null;
 	};
 
-	const 写入远端 = async (chunk, allowRetry = true) => {
-		const socket = remoteConnWrapper.socket;
-		if (!socket) return false;
-
-		if (socket !== 当前写入Socket) {
-			释放远端写入器();
-			当前写入Socket = socket;
-			远端写入器 = socket.writable.getWriter();
-		}
-
-		try {
-			await 远端写入器.write(chunk);
-			return true;
-		} catch (err) {
-			释放远端写入器();
-			if (allowRetry && typeof remoteConnWrapper.retryConnect === 'function') {
-				await remoteConnWrapper.retryConnect();
-				return await 写入远端(chunk, false);
+	const 上行写入队列 = WS上行写入队列 = 创建上行写入队列({
+		获取写入器: () => {
+			const socket = remoteConnWrapper.socket;
+			if (!socket) return null;
+			if (socket !== 当前写入Socket) {
+				释放远端写入器();
+				当前写入Socket = socket;
+				远端写入器 = socket.writable.getWriter();
 			}
-			throw err;
-		}
+			return 远端写入器;
+		},
+		释放写入器: 释放远端写入器,
+		重试连接: async () => {
+			if (typeof remoteConnWrapper.retryConnect !== 'function') throw new Error('retry unavailable');
+			await remoteConnWrapper.retryConnect();
+		},
+		关闭连接: () => {
+			try { remoteConnWrapper.socket?.close() } catch (e) { }
+			closeSocketQuietly(serverSock);
+		},
+		名称: 'WS上行'
+	});
+
+	const 写入远端 = async (chunk, allowRetry = true) => {
+		return 上行写入队列.写入(chunk, allowRetry);
 	};
 
 	const 获取SS上下文 = async () => {
@@ -1337,7 +1340,7 @@ async function 处理WS请求(request, yourUUID, url) {
 			}
 			if (已写入) continue;
 			if (上下文.首包已建立 && 上下文.目标主机 && 上下文.目标端口 > 0) {
-				await forwardataTCP(上下文.目标主机, 上下文.目标端口, 明文块, 上下文.回包Socket, null, remoteConnWrapper, yourUUID);
+				await forwardataTCP(上下文.目标主机, 上下文.目标端口, 明文块, 上下文.回包Socket, null, remoteConnWrapper, yourUUID, request);
 				continue;
 			}
 			const 明文数据 = 数据转Uint8Array(明文块);
@@ -1374,85 +1377,143 @@ async function 处理WS请求(request, yourUUID, url) {
 			上下文.首包已建立 = true;
 			上下文.目标主机 = hostname;
 			上下文.目标端口 = port;
-			await forwardataTCP(hostname, port, rawClientData, 上下文.回包Socket, null, remoteConnWrapper, yourUUID);
+			await forwardataTCP(hostname, port, rawClientData, 上下文.回包Socket, null, remoteConnWrapper, yourUUID, request);
 		}
 	};
 
-	readable.pipeTo(new WritableStream({
-		async write(chunk) {
-			if (isDnsQuery) {
-				if (判断是否是木马) return await 转发木马UDP数据(chunk, serverSock, 木马UDP上下文);
-				return await forwardataudp(chunk, serverSock, null);
-			}
-			if (判断协议类型 === 'ss') {
-				await 处理SS数据(chunk);
-				return;
-			}
-			if (await 写入远端(chunk)) return;
-
-			if (判断协议类型 === null) {
-				if (url.searchParams.get('enc')) 判断协议类型 = 'ss';
-				else {
-					const bytes = new Uint8Array(chunk);
-					判断协议类型 = bytes.byteLength >= 58 && bytes[56] === 0x0d && bytes[57] === 0x0a ? '木马' : '魏烈思';
-				}
-				判断是否是木马 = 判断协议类型 === '木马';
-				log(`[WS转发] 协议类型: ${判断协议类型} | 来自: ${url.host} | UA: ${request.headers.get('user-agent') || '未知'}`);
-			}
-
-			if (判断协议类型 === 'ss') {
-				await 处理SS数据(chunk);
-				return;
-			}
-			if (await 写入远端(chunk)) return;
-			if (判断协议类型 === '木马') {
-				const 解析结果 = 解析木马请求(chunk, yourUUID);
-				if (解析结果?.hasError) throw new Error(解析结果.message || 'Invalid trojan request');
-				const { port, hostname, rawClientData, isUDP } = 解析结果;
-				if (isSpeedTestSite(hostname)) throw new Error('Speedtest site is blocked');
-				if (isUDP) {
-					isDnsQuery = true;
-					if (有效数据长度(rawClientData) > 0) return 转发木马UDP数据(rawClientData, serverSock, 木马UDP上下文);
-					return;
-				}
-				await forwardataTCP(hostname, port, rawClientData, serverSock, null, remoteConnWrapper, yourUUID);
-			} else {
-				判断是否是木马 = false;
-				const 解析结果 = 解析魏烈思请求(chunk, yourUUID);
-				if (解析结果?.hasError) throw new Error(解析结果.message || 'Invalid 魏烈思 request');
-				const { port, hostname, rawIndex, version, isUDP } = 解析结果;
-				if (isSpeedTestSite(hostname)) throw new Error('Speedtest site is blocked');
-				if (isUDP) {
-					if (port === 53) isDnsQuery = true;
-					else throw new Error('UDP is not supported');
-				}
-				const respHeader = new Uint8Array([version[0], 0]);
-				const rawData = chunk.slice(rawIndex);
-				if (isDnsQuery) {
-					if (判断是否是木马) return 转发木马UDP数据(rawData, serverSock, 木马UDP上下文);
-					return forwardataudp(rawData, serverSock, respHeader);
-				}
-				await forwardataTCP(hostname, port, rawData, serverSock, respHeader, remoteConnWrapper, yourUUID);
-			}
-		},
-		close() {
-			释放远端写入器();
-		},
-		abort() {
-			释放远端写入器();
+	const 处理WS入站数据 = async (chunk) => {
+		let 当前块字节 = null;
+		if (isDnsQuery) {
+			if (判断是否是木马) return await 转发木马UDP数据(chunk, serverSock, 木马UDP上下文);
+			return await forwardataudp(chunk, serverSock, null);
 		}
-	})).catch((err) => {
+		if (判断协议类型 === 'ss') {
+			await 处理SS数据(chunk);
+			return;
+		}
+		if (await 写入远端(chunk)) return;
+
+		if (判断协议类型 === null) {
+			if (url.searchParams.get('enc')) 判断协议类型 = 'ss';
+			else {
+				当前块字节 = 当前块字节 || 数据转Uint8Array(chunk);
+				const bytes = 当前块字节;
+				判断协议类型 = bytes.byteLength >= 58 && bytes[56] === 0x0d && bytes[57] === 0x0a ? '木马' : '魏烈思';
+			}
+			判断是否是木马 = 判断协议类型 === '木马';
+			log(`[WS转发] 协议类型: ${判断协议类型} | 来自: ${url.host} | UA: ${request.headers.get('user-agent') || '未知'}`);
+		}
+
+		if (判断协议类型 === 'ss') {
+			await 处理SS数据(chunk);
+			return;
+		}
+		if (await 写入远端(chunk)) return;
+		if (判断协议类型 === '木马') {
+			const 解析结果 = 解析木马请求(chunk, yourUUID);
+			if (解析结果?.hasError) throw new Error(解析结果.message || 'Invalid trojan request');
+			const { port, hostname, rawClientData, isUDP } = 解析结果;
+			if (isSpeedTestSite(hostname)) throw new Error('Speedtest site is blocked');
+			if (isUDP) {
+				isDnsQuery = true;
+				if (有效数据长度(rawClientData) > 0) return 转发木马UDP数据(rawClientData, serverSock, 木马UDP上下文);
+				return;
+			}
+			await forwardataTCP(hostname, port, rawClientData, serverSock, null, remoteConnWrapper, yourUUID, request);
+		} else {
+			判断是否是木马 = false;
+			当前块字节 = 当前块字节 || 数据转Uint8Array(chunk);
+			const bytes = 当前块字节;
+			const 解析结果 = 解析魏烈思请求(bytes, yourUUID);
+			if (解析结果?.hasError) throw new Error(解析结果.message || 'Invalid 魏烈思 request');
+			const { port, hostname, version, isUDP, rawClientData } = 解析结果;
+			if (isSpeedTestSite(hostname)) throw new Error('Speedtest site is blocked');
+			if (isUDP) {
+				if (port === 53) isDnsQuery = true;
+				else throw new Error('UDP is not supported');
+			}
+			const respHeader = new Uint8Array([version, 0]);
+			const rawData = rawClientData;
+			if (isDnsQuery) {
+				if (判断是否是木马) return 转发木马UDP数据(rawData, serverSock, 木马UDP上下文);
+				return forwardataudp(rawData, serverSock, respHeader);
+			}
+			await forwardataTCP(hostname, port, rawData, serverSock, respHeader, remoteConnWrapper, yourUUID, request);
+		}
+	};
+
+	const 处理WS显式传输错误 = (err) => {
+		if (WS显式传输失败) return;
+		WS显式传输失败 = true;
+		WS显式传输停止接收 = true;
+		WS显式队列字节 = 0;
+		WS显式队列条目 = 0;
 		const msg = err?.message || `${err}`;
 		if (msg.includes('Network connection lost') || msg.includes('ReadableStream is closed')) {
 			log(`[WS转发] 连接结束: ${msg}`);
 		} else {
 			log(`[WS转发] 处理失败: ${msg}`);
 		}
+		上行写入队列.清空();
 		释放远端写入器();
 		closeSocketQuietly(serverSock);
+	};
+
+	const 追加WS显式传输任务 = (任务) => {
+		WS显式传输链 = WS显式传输链.then(任务).catch(处理WS显式传输错误);
+		return WS显式传输链;
+	};
+
+	const 入队WS显式传输 = (data) => {
+		if (WS显式传输停止接收 || WS显式传输失败) return;
+		const chunkSize = Math.max(0, 有效数据长度(data));
+		WS显式队列字节 += chunkSize;
+		WS显式队列条目++;
+		if (WS显式队列字节 > 上行队列最大字节 || WS显式队列条目 > 上行队列最大条目) {
+			处理WS显式传输错误(new Error(`[WS显式传输] 队列溢出: ${WS显式队列字节}B/${WS显式队列条目}`));
+			return;
+		}
+		追加WS显式传输任务(async () => {
+			WS显式队列字节 = Math.max(0, WS显式队列字节 - chunkSize);
+			WS显式队列条目 = Math.max(0, WS显式队列条目 - 1);
+			if (WS显式传输失败) return;
+			await 处理WS入站数据(data);
+		});
+	};
+
+	const 收尾WS显式传输 = () => {
+		if (WS显式传输收尾已入队) return;
+		WS显式传输收尾已入队 = true;
+		WS显式传输停止接收 = true;
+		追加WS显式传输任务(async () => {
+			if (WS显式传输失败) return;
+			await 上行写入队列.等待空();
+			释放远端写入器();
+		});
+	};
+
+	serverSock.addEventListener('message', (event) => {
+		入队WS显式传输(event.data);
+	});
+	serverSock.addEventListener('close', () => {
+		closeSocketQuietly(serverSock);
+		收尾WS显式传输();
+	});
+	serverSock.addEventListener('error', (err) => {
+		处理WS显式传输错误(err);
 	});
 
-	return new Response(null, { status: 101, webSocket: clientSock });
+	// SS 模式下禁用 sec-websocket-protocol early-data，避免把子协议值（如 "binary"）误当作 base64 数据注入首包导致 AEAD 解密失败。
+	if (!SS模式禁用EarlyData && earlyDataHeader) {
+		try {
+			const bytes = 解码WS早期数据(earlyDataHeader, yourUUID);
+			if (bytes?.byteLength) 入队WS显式传输(bytes.buffer);
+		} catch (error) {
+			处理WS显式传输错误(error);
+		}
+	}
+
+	return new Response(null, { status: 101, webSocket: clientSock, headers: { 'Sec-WebSocket-Extensions': '' } });
 }
 
 function 解析木马请求(buffer, passwordPlainText) {
@@ -1516,40 +1577,94 @@ function 解析木马请求(buffer, passwordPlainText) {
 	};
 }
 
+const UUID字节缓存 = new Map();
+const VLESS文本解码器 = new TextDecoder();
+
+function 读取十六进制半字节(code) {
+	if (code >= 48 && code <= 57) return code - 48;
+	code |= 32;
+	if (code >= 97 && code <= 102) return code - 87;
+	return -1;
+}
+
+function 获取UUID字节(uuid) {
+	const key = String(uuid || '');
+	let cached = UUID字节缓存.get(key);
+	if (cached) return cached;
+
+	const clean = key.replace(/-/g, '');
+	if (clean.length !== 32) return null;
+
+	const bytes = new Uint8Array(16);
+	for (let i = 0; i < 16; i++) {
+		const high = 读取十六进制半字节(clean.charCodeAt(i * 2));
+		const low = 读取十六进制半字节(clean.charCodeAt(i * 2 + 1));
+		if (high < 0 || low < 0) return null;
+		bytes[i] = (high << 4) | low;
+	}
+
+	if (UUID字节缓存.size >= 32) UUID字节缓存.clear();
+	UUID字节缓存.set(key, bytes);
+	return bytes;
+}
+
+function UUID字节匹配(data, offset, uuid) {
+	const expected = 获取UUID字节(uuid);
+	if (!expected || data.byteLength < offset + 16) return false;
+	for (let i = 0; i < 16; i++) {
+		if (data[offset + i] !== expected[i]) return false;
+	}
+	return true;
+}
+
 function 解析魏烈思请求(chunk, token) {
-	if (chunk.byteLength < 24) return { hasError: true, message: 'Invalid data' };
-	const version = new Uint8Array(chunk.slice(0, 1));
-	if (formatIdentifier(new Uint8Array(chunk.slice(1, 17))) !== token) return { hasError: true, message: 'Invalid uuid' };
-	const optLen = new Uint8Array(chunk.slice(17, 18))[0];
-	const cmd = new Uint8Array(chunk.slice(18 + optLen, 19 + optLen))[0];
+	const data = 数据转Uint8Array(chunk);
+	const length = data.byteLength;
+	if (length < 24) return { hasError: true, message: 'Invalid data' };
+	const version = data[0];
+	if (!UUID字节匹配(data, 1, token)) return { hasError: true, message: 'Invalid uuid' };
+
+	const optLen = data[17];
+	const cmdIndex = 18 + optLen;
+	if (length < cmdIndex + 4) return { hasError: true, message: 'Invalid data' };
+
+	const cmd = data[cmdIndex];
 	let isUDP = false;
 	if (cmd === 1) { } else if (cmd === 2) { isUDP = true } else { return { hasError: true, message: 'Invalid command' } }
-	const portIdx = 19 + optLen;
-	const port = new DataView(chunk.slice(portIdx, portIdx + 2)).getUint16(0);
-	let addrIdx = portIdx + 2, addrLen = 0, addrValIdx = addrIdx + 1, hostname = '';
-	const addressType = new Uint8Array(chunk.slice(addrIdx, addrValIdx))[0];
+
+	const portIdx = cmdIndex + 1;
+	const port = (data[portIdx] << 8) | data[portIdx + 1];
+	let addrValIdx = portIdx + 3, addrLen = 0, hostname = '';
+	const addressType = data[portIdx + 2];
 	switch (addressType) {
 		case 1:
 			addrLen = 4;
-			hostname = new Uint8Array(chunk.slice(addrValIdx, addrValIdx + addrLen)).join('.');
+			if (length < addrValIdx + addrLen) return { hasError: true, message: 'Invalid IPv4 address length' };
+			hostname = `${data[addrValIdx]}.${data[addrValIdx + 1]}.${data[addrValIdx + 2]}.${data[addrValIdx + 3]}`;
 			break;
 		case 2:
-			addrLen = new Uint8Array(chunk.slice(addrValIdx, addrValIdx + 1))[0];
+			if (length < addrValIdx + 1) return { hasError: true, message: 'Invalid domain length' };
+			addrLen = data[addrValIdx];
 			addrValIdx += 1;
-			hostname = new TextDecoder().decode(chunk.slice(addrValIdx, addrValIdx + addrLen));
+			if (length < addrValIdx + addrLen) return { hasError: true, message: 'Invalid domain data' };
+			hostname = VLESS文本解码器.decode(data.subarray(addrValIdx, addrValIdx + addrLen));
 			break;
 		case 3:
 			addrLen = 16;
+			if (length < addrValIdx + addrLen) return { hasError: true, message: 'Invalid IPv6 address length' };
 			const ipv6 = [];
-			const ipv6View = new DataView(chunk.slice(addrValIdx, addrValIdx + addrLen));
-			for (let i = 0; i < 8; i++) ipv6.push(ipv6View.getUint16(i * 2).toString(16));
+			for (let i = 0; i < 8; i++) {
+				const base = addrValIdx + i * 2;
+				ipv6.push(((data[base] << 8) | data[base + 1]).toString(16));
+			}
 			hostname = ipv6.join(':');
 			break;
 		default:
 			return { hasError: true, message: `Invalid address type: ${addressType}` };
 	}
 	if (!hostname) return { hasError: true, message: `Invalid address: ${addressType}` };
-	return { hasError: false, addressType, port, hostname, isUDP, rawIndex: addrValIdx + addrLen, version };
+	const rawIndex = addrValIdx + addrLen;
+	return { hasError: false, addressType, port, hostname, isUDP, rawClientData: data.subarray(rawIndex), version };
 }
 
 const SS支持加密配置 = {
@@ -1706,10 +1821,15 @@ async function SSAEAD解密(cryptoKey, nonceCounter, ciphertext) {
 	return new Uint8Array(pt);
 }
 
-async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnWrapper, yourUUID) {
+async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnWrapper, yourUUID, request = null) {
 	log(`[TCP转发] 目标: ${host}:${portNum} | 反代IP: ${反代IP} | 反代兜底: ${启用反代兜底 ? '是' : '否'} | 反代类型: ${启用SOCKS5反代 || 'proxyip'} | 全局: ${启用SOCKS5全局反代 ? '是' : '否'}`);
 	const 连接超时毫秒 = 1000;
 	let 已通过代理发送首包 = false;
+	let 请求FetcherConnect = null, fetcherConnect失败已记录 = false;
+	try {
+		const 请求Fetcher = request?.fetcher;
+		if (请求Fetcher && typeof 请求Fetcher.connect === 'function') 请求FetcherConnect = 请求Fetcher.connect.bind(请求Fetcher);
+	} catch (e) { }
 
 	async function 等待连接建立(remoteSock, timeoutMs = 连接超时毫秒) {
 		await Promise.race([
@@ -1718,41 +1838,100 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
 		]);
 	}
 
+	async function 打开TCP连接(address, port) {
+		if (请求FetcherConnect) {
+			let fetcherSock = null;
+			try {
+				fetcherSock = 请求FetcherConnect({ hostname: address, port });
+				await 等待连接建立(fetcherSock);
+				return fetcherSock;
+			} catch (err) {
+				try { fetcherSock?.close?.() } catch (e) { }
+				if (!fetcherConnect失败已记录) {
+					fetcherConnect失败已记录 = true;
+					log(`[TCP拨号] request.fetcher.connect 不可用或连接失败，回退 connect(): ${err?.message || err}`);
+				}
+			}
+		}
+		const remoteSock = connect({ hostname: address, port });
+		try {
+			await 等待连接建立(remoteSock);
+			return remoteSock;
+		} catch (err) {
+			try { remoteSock?.close?.() } catch (e) { }
+			throw err;
+		}
+	}
+
+	async function 写入首包(remoteSock, data) {
+		if (有效数据长度(data) <= 0) return;
+		const writer = remoteSock.writable.getWriter();
+		try { await writer.write(数据转Uint8Array(data)) }
+		finally { try { writer.releaseLock() } catch (e) { } }
+	}
+
+	async function 并发打开候选连接(候选列表) {
+		if (候选列表.length === 1) {
+			const 候选 = 候选列表[0];
+			return { socket: await 打开TCP连接(候选.hostname, 候选.port), candidate: 候选 };
+		}
+		const attempts = 候选列表.map(候选 => 打开TCP连接(候选.hostname, 候选.port).then(socket => ({ socket, candidate: 候选 })));
+		let winner = null;
+		try {
+			winner = await Promise.any(attempts);
+			return winner;
+		} finally {
+			if (winner) {
+				for (const attempt of attempts) {
+					attempt.then(({ socket }) => {
+						if (socket !== winner.socket) {
+							try { socket?.close?.() } catch (e) { }
+						}
+					}).catch(() => { });
+				}
+			}
+		}
+	}
+
 	async function connectDirect(address, port, data = null, 所有反代数组 = null, 反代兜底 = true) {
-		let remoteSock;
 		if (所有反代数组 && 所有反代数组.length > 0) {
-			for (let i = 0; i < 所有反代数组.length; i++) {
-				const 反代数组索引 = (缓存反代数组索引 + i) % 所有反代数组.length;
-				const [反代地址, 反代端口] = 所有反代数组[反代数组索引];
+			for (let i = 0; i < 所有反代数组.length; i += TCP并发拨号数) {
+				const 候选列表 = [];
+				for (let j = 0; j < TCP并发拨号数 && i + j < 所有反代数组.length; j++) {
+					const 反代数组索引 = (缓存反代数组索引 + i + j) % 所有反代数组.length;
+					const [反代地址, 反代端口] = 所有反代数组[反代数组索引];
+					候选列表.push({ hostname: 反代地址, port: 反代端口, index: 反代数组索引 });
+				}
+				let socket = null, candidate = null;
 				try {
-					log(`[反代连接] 尝试连接到: ${反代地址}:${反代端口} (索引: ${反代数组索引})`);
-					remoteSock = connect({ hostname: 反代地址, port: 反代端口 });
-					await 等待连接建立(remoteSock);
-					if (有效数据长度(data) > 0) {
-						const testWriter = remoteSock.writable.getWriter();
-						await testWriter.write(data);
-						testWriter.releaseLock();
-					}
-					log(`[反代连接] 成功连接到: ${反代地址}:${反代端口}`);
-					缓存反代数组索引 = 反代数组索引;
-					return remoteSock;
+					log(`[反代连接] 并发尝试 ${候选列表.length} 路: ${候选列表.map(候选 => `${候选.hostname}:${候选.port}`).join(', ')}`);
+					const 连接结果 = await 并发打开候选连接(候选列表);
+					socket = 连接结果.socket;
+					candidate = 连接结果.candidate;
+					await 写入首包(socket, data);
+					log(`[反代连接] 成功连接到: ${candidate.hostname}:${candidate.port} (索引: ${candidate.index})`);
+					缓存反代数组索引 = candidate.index;
+					return socket;
 				} catch (err) {
-					log(`[反代连接] 连接失败: ${反代地址}:${反代端口}, 错误: ${err.message}`);
-					try { remoteSock?.close?.() } catch (e) { }
-					continue;
+					try { socket?.close?.() } catch (e) { }
+					log(`[反代连接] 本批连接失败: ${err.message || err}`);
 				}
 			}
 		}
 
 		if (反代兜底) {
-			remoteSock = connect({ hostname: address, port: port });
-			await 等待连接建立(remoteSock);
-			if (有效数据长度(data) > 0) {
-				const writer = remoteSock.writable.getWriter();
-				await writer.write(data);
-				writer.releaseLock();
+			const 候选列表 = Array.from({ length: TCP并发拨号数 }, (_, attempt) => ({ hostname: address, port, attempt }));
+			log(`[TCP直连] 并发尝试 ${候选列表.length} 路: ${address}:${port}`);
+			let socket = null;
+			try {
+				const 连接结果 = await 并发打开候选连接(候选列表);
+				socket = 连接结果.socket;
+				await 写入首包(socket, data);
+				return socket;
+			} catch (err) {
+				try { socket?.close?.() } catch (e) { }
+				throw err;
 			}
-			return remoteSock;
 		} else {
 			closeSocketQuietly(ws);
 			throw new Error('[反代连接] 所有反代连接失败，且未启用反代兜底，连接终止。');
@@ -1861,19 +2040,18 @@ async function forwardataudp(udpChunk, webSocket, respHeader, 响应封装器 = 
 				const 封装结果 = 响应封装器 ? await 响应封装器(原始响应) : 原始响应;
 				const 发送片段列表 = Array.isArray(封装结果) ? 封装结果 : [封装结果];
 				if (!发送片段列表.length) return;
-				if (webSocket.readyState === WebSocket.OPEN) {
-					for (const fragment of 发送片段列表) {
-						const 转发响应 = 数据转Uint8Array(fragment);
-						if (!转发响应.byteLength) continue;
-						if (魏烈思Header) {
-							const response = new Uint8Array(魏烈思Header.length + 转发响应.byteLength);
-							response.set(魏烈思Header, 0);
-							response.set(转发响应, 魏烈思Header.length);
-							await WebSocket发送并等待(webSocket, response.buffer);
-							魏烈思Header = null;
-						} else {
-							await WebSocket发送并等待(webSocket, 转发响应);
-						}
+				if (webSocket.readyState !== WebSocket.OPEN) return;
+				for (const fragment of 发送片段列表) {
+					const 转发响应 = 数据转Uint8Array(fragment);
+					if (!转发响应.byteLength) continue;
+					if (魏烈思Header) {
+						const response = new Uint8Array(魏烈思Header.length + 转发响应.byteLength);
+						response.set(魏烈思Header, 0);
+						response.set(转发响应, 魏烈思Header.length);
+						await WebSocket发送并等待(webSocket, response.buffer);
+						魏烈思Header = null;
+					} else {
+						await WebSocket发送并等待(webSocket, 转发响应);
 					}
 				}
 			},
@@ -1901,112 +2079,277 @@ async function WebSocket发送并等待(webSocket, payload) {
 	if (sendResult && typeof sendResult.then === 'function') await sendResult;
 }
 
+function 创建上行写入队列({ 获取写入器, 释放写入器, 重试连接, 关闭连接, 名称 = '上行队列' }) {
+	let chunks = [];
+	let head = 0;
+	let queuedBytes = 0;
+	let draining = false;
+	let closed = false;
+	let bundleBuffer = null;
+	let idleResolvers = [];
+
+	const compact = () => {
+		if (head > 32 && head * 2 >= chunks.length) {
+			chunks = chunks.slice(head);
+			head = 0;
+		}
+	};
+
+	const resolveIdle = () => {
+		if (queuedBytes || draining || !idleResolvers.length) return;
+		const resolvers = idleResolvers;
+		idleResolvers = [];
+		for (const resolve of resolvers) resolve();
+	};
+
+	const clear = () => {
+		chunks = [];
+		head = 0;
+		queuedBytes = 0;
+		resolveIdle();
+	};
+
+	const shift = () => {
+		if (head >= chunks.length) return null;
+		const item = chunks[head];
+		chunks[head++] = undefined;
+		queuedBytes -= item.chunk.byteLength;
+		compact();
+		return item;
+	};
+
+	const bundle = () => {
+		const first = shift();
+		if (!first) return null;
+		if (head >= chunks.length || first.chunk.byteLength >= 上行合包目标字节) return first;
+
+		let byteLength = first.chunk.byteLength;
+		let end = head;
+		let allowRetry = first.allowRetry;
+		while (end < chunks.length) {
+			const next = chunks[end];
+			const nextLength = byteLength + next.chunk.byteLength;
+			if (nextLength > 上行合包目标字节) break;
+			byteLength = nextLength;
+			allowRetry = allowRetry && next.allowRetry;
+			end++;
+		}
+		if (end === head) return first;
+
+		const output = (bundleBuffer ||= new Uint8Array(上行合包目标字节));
+		output.set(first.chunk);
+		let offset = first.chunk.byteLength;
+		while (head < end) {
+			const next = chunks[head];
+			chunks[head++] = undefined;
+			queuedBytes -= next.chunk.byteLength;
+			output.set(next.chunk, offset);
+			offset += next.chunk.byteLength;
+		}
+		compact();
+		return { chunk: output.subarray(0, byteLength), allowRetry };
+	};
+
+	const drain = async () => {
+		if (draining || closed) return;
+		draining = true;
+		try {
+			for (;;) {
+				if (closed) break;
+				const item = bundle();
+				if (!item) break;
+				let writer = 获取写入器();
+				if (!writer) throw new Error(`${名称}: remote writer unavailable`);
+				try {
+					await writer.write(item.chunk);
+				} catch (err) {
+					释放写入器?.();
+					if (!item.allowRetry || typeof 重试连接 !== 'function') throw err;
+					await 重试连接();
+					writer = 获取写入器();
+					if (!writer) throw err;
+					await writer.write(item.chunk);
+				}
+			}
+		} catch (err) {
+			closed = true;
+			clear();
+			log(`[${名称}] 写入失败: ${err?.message || err}`);
+			try { 关闭连接?.(err) } catch (_) { }
+		} finally {
+			draining = false;
+			if (!closed && head < chunks.length) queueMicrotask(drain);
+			else resolveIdle();
+		}
+	};
+
+	return {
+		写入(data, allowRetry = true) {
+			if (closed) return false;
+			if (!获取写入器()) return false;
+			const chunk = 数据转Uint8Array(data);
+			if (!chunk.byteLength) return true;
+			if (queuedBytes + chunk.byteLength > 上行队列最大字节 || chunks.length - head >= 上行队列最大条目) {
+				closed = true;
+				clear();
+				const err = new Error(`${名称}: upload queue overflow`);
+				log(`[${名称}] 队列超限，关闭连接`);
+				try { 关闭连接?.(err) } catch (_) { }
+				throw err;
+			}
+			chunks.push({ chunk, allowRetry });
+			queuedBytes += chunk.byteLength;
+			if (!draining) queueMicrotask(drain);
+			return true;
+		},
+		async 等待空() {
+			if (!queuedBytes && !draining) return;
+			await new Promise(resolve => idleResolvers.push(resolve));
+		},
+		清空() {
+			closed = true;
+			clear();
+		}
+	};
+}
+
+function 创建下行Grain发送器(webSocket, headerData = null) {
+	const packetCap = 下行Grain包字节;
+	const tailBytes = 下行Grain尾部阈值;
+	const lowWaterBytes = Math.max(4096, tailBytes << 3);
+	let header = headerData;
+	let pendingBuffer = new Uint8Array(packetCap);
+	let pendingBytes = 0;
+	let flushTimer = null;
+	let microtaskQueued = false;
+	let generation = 0;
+	let scheduledGeneration = 0;
+	let waitRounds = 0;
+	let flushPromise = null;
+
+	const 发送原始块 = async (chunk) => {
+		if (webSocket.readyState !== WebSocket.OPEN) throw new Error('ws.readyState is not open');
+		await WebSocket发送并等待(webSocket, chunk);
+	};
+
+	const 附加响应头 = (chunk) => {
+		if (!header) return chunk;
+		const merged = new Uint8Array(header.length + chunk.byteLength);
+		merged.set(header, 0);
+		merged.set(chunk, header.length);
+		header = null;
+		return merged;
+	};
+
+	const flush = async () => {
+		if (flushPromise) return flushPromise;
+		flushPromise = (async () => {
+			if (flushTimer) clearTimeout(flushTimer);
+			flushTimer = null;
+			microtaskQueued = false;
+			if (!pendingBytes) return;
+			const output = pendingBuffer.subarray(0, pendingBytes).slice();
+			pendingBuffer = new Uint8Array(packetCap);
+			pendingBytes = 0;
+			waitRounds = 0;
+			await 发送原始块(output);
+		})().finally(() => { flushPromise = null });
+		return flushPromise;
+	};
+
+	const scheduleFlush = () => {
+		if (flushTimer || microtaskQueued) return;
+		microtaskQueued = true;
+		scheduledGeneration = generation;
+		queueMicrotask(() => {
+			microtaskQueued = false;
+			if (!pendingBytes || flushTimer) return;
+			if (packetCap - pendingBytes < tailBytes) {
+				flush().catch(() => closeSocketQuietly(webSocket));
+				return;
+			}
+			flushTimer = setTimeout(() => {
+				flushTimer = null;
+				if (!pendingBytes) return;
+				if (packetCap - pendingBytes < tailBytes) {
+					flush().catch(() => closeSocketQuietly(webSocket));
+					return;
+				}
+				if (waitRounds < 2 && (generation !== scheduledGeneration || pendingBytes < lowWaterBytes)) {
+					waitRounds++;
+					scheduledGeneration = generation;
+					scheduleFlush();
+					return;
+				}
+				flush().catch(() => closeSocketQuietly(webSocket));
+			}, 下行Grain静默毫秒);
+		});
+	};
+
+	return {
+		async 发送(data) {
+			let chunk = 数据转Uint8Array(data);
+			if (!chunk.byteLength) return;
+			chunk = 附加响应头(chunk);
+			let offset = 0;
+			const totalBytes = chunk.byteLength;
+			while (offset < totalBytes) {
+				if (!pendingBytes && totalBytes - offset >= packetCap) {
+					const sendBytes = Math.min(packetCap, totalBytes - offset);
+					const view = offset || sendBytes !== totalBytes ? chunk.subarray(offset, offset + sendBytes) : chunk;
+					await 发送原始块(view);
+					offset += sendBytes;
+					continue;
+				}
+				const copyBytes = Math.min(packetCap - pendingBytes, totalBytes - offset);
+				pendingBuffer.set(chunk.subarray(offset, offset + copyBytes), pendingBytes);
+				pendingBytes += copyBytes;
+				offset += copyBytes;
+				generation++;
+				if (pendingBytes === packetCap || packetCap - pendingBytes < tailBytes) await flush();
+				else scheduleFlush();
+			}
+		},
+		flush
+	};
+}
+
 async function connectStreams(remoteSocket, webSocket, headerData, retryFunc) {
 	let header = headerData, hasData = false, reader, useBYOB = false;
-	const BYOB缓冲区大小 = 512 * 1024, BYOB单次读取上限 = 64 * 1024, BYOB高吞吐阈值 = 50 * 1024 * 1024;
-	const 普通流聚合阈值 = 128 * 1024, 普通流刷新间隔 = 2;
-	const BYOB慢速刷新间隔 = 20, BYOB快速刷新间隔 = 2, BYOB安全阈值 = BYOB缓冲区大小 - BYOB单次读取上限;
-
-	const 发送块 = async (chunk) => {
-		if (webSocket.readyState !== WebSocket.OPEN) throw new Error('ws.readyState is not open');
-		if (header) {
-			const merged = new Uint8Array(header.length + chunk.byteLength);
-			merged.set(header, 0); merged.set(chunk, header.length);
-			await WebSocket发送并等待(webSocket, merged.buffer);
-			header = null;
-		} else await WebSocket发送并等待(webSocket, chunk);
-	};
+	const BYOB单次读取上限 = 64 * 1024;
+	const 下行发送器 = 创建下行Grain发送器(webSocket, header);
+	header = null;
 
 	try { reader = remoteSocket.readable.getReader({ mode: 'byob' }); useBYOB = true }
 	catch (e) { reader = remoteSocket.readable.getReader() }
 
 	try {
 		if (!useBYOB) {
-			let pendingChunks = [], pendingBytes = 0, flush定时器 = null, flush任务 = null;
-			const flush = async () => {
-				if (flush任务) return flush任务;
-				flush任务 = (async () => {
-					if (flush定时器) { clearTimeout(flush定时器); flush定时器 = null }
-					if (pendingBytes <= 0) return;
-					const chunks = pendingChunks, bytes = pendingBytes;
-					pendingChunks = []; pendingBytes = 0;
-					const payload = chunks.length === 1 ? chunks[0] : 拼接字节数据(...chunks);
-					if (payload.byteLength || bytes > 0) await 发送块(payload);
-				})().finally(() => { flush任务 = null });
-				return flush任务;
-			};
-			const 推送普通流块 = async (chunk) => {
-				const bytes = 数据转Uint8Array(chunk);
-				if (!bytes.byteLength) return;
-				pendingChunks.push(bytes);
-				pendingBytes += bytes.byteLength;
-				if (pendingBytes >= 普通流聚合阈值) {
-					await flush();
-					if (pendingBytes >= 普通流聚合阈值) await flush();
-				} else if (!flush定时器) {
-					flush定时器 = setTimeout(() => { flush().catch(() => closeSocketQuietly(webSocket)) }, 普通流刷新间隔);
-				}
-			};
 			while (true) {
 				const { done, value } = await reader.read();
 				if (done) break;
 				if (!value || value.byteLength === 0) continue;
 				hasData = true;
-				await 推送普通流块(value);
+				await 下行发送器.发送(value);
 			}
-			await flush();
 		} else {
-			let mainBuf = new ArrayBuffer(BYOB缓冲区大小), offset = 0, totalBytes = 0;
-			let flush间隔毫秒 = BYOB快速刷新间隔, flush定时器 = null, 等待刷新恢复 = null;
-			let 正在读取 = false, 读取中待刷新 = false;
-
-			const flush = async () => {
-				if (正在读取) { 读取中待刷新 = true; return }
-				try {
-					if (offset > 0) { const p = new Uint8Array(mainBuf.slice(0, offset)); offset = 0; await 发送块(p) }
-				} finally {
-					读取中待刷新 = false;
-					if (flush定时器) { clearTimeout(flush定时器); flush定时器 = null }
-					if (等待刷新恢复) { const r = 等待刷新恢复; 等待刷新恢复 = null; r() }
-				}
-			};
-
+			let readBuffer = new ArrayBuffer(BYOB单次读取上限);
 			while (true) {
-				正在读取 = true;
-				const { done, value } = await reader.read(new Uint8Array(mainBuf, offset, BYOB单次读取上限));
-				正在读取 = false;
+				const { done, value } = await reader.read(new Uint8Array(readBuffer, 0, BYOB单次读取上限));
 				if (done) break;
-				if (!value || value.byteLength === 0) { if (读取中待刷新) await flush(); continue }
+				if (!value || value.byteLength === 0) continue;
 				hasData = true;
-				mainBuf = value.buffer;
-				const len = value.byteLength;
-
-				if (value.byteOffset !== offset) {
-					log(`[BYOB] 偏移异常: 预期=${offset}, 实际=${value.byteOffset}`);
-					await 发送块(new Uint8Array(value.buffer, value.byteOffset, len).slice());
-					mainBuf = new ArrayBuffer(BYOB缓冲区大小); offset = 0; totalBytes = 0;
-					continue;
-				}
-
-				if (len < BYOB单次读取上限) {
-					flush间隔毫秒 = BYOB快速刷新间隔;
-					if (len < 4096) totalBytes = 0;
-					if (offset > 0) { offset += len; await flush() }
-					else await 发送块(value.slice());
+				if (value.byteLength >= 下行Grain包字节) {
+					await 下行发送器.flush();
+					await 下行发送器.发送(value);
+					readBuffer = new ArrayBuffer(BYOB单次读取上限);
 				} else {
-					totalBytes += len; offset += len;
-					if (!flush定时器) flush定时器 = setTimeout(() => { flush().catch(() => closeSocketQuietly(webSocket)) }, flush间隔毫秒);
-					if (读取中待刷新) await flush();
-					if (offset > BYOB安全阈值) {
-						if (totalBytes > BYOB高吞吐阈值) flush间隔毫秒 = BYOB慢速刷新间隔;
-						await new Promise(r => { 等待刷新恢复 = r });
-					}
+					await 下行发送器.发送(value);
+					readBuffer = value.buffer.byteLength >= BYOB单次读取上限 ? value.buffer : new ArrayBuffer(BYOB单次读取上限);
 				}
 			}
-			正在读取 = false;
-			await flush();
-			if (flush定时器) { clearTimeout(flush定时器); flush定时器 = null }
 		}
+		await 下行发送器.flush();
 	} catch (err) { closeSocketQuietly(webSocket) }
 	finally { try { reader.cancel() } catch (e) { } try { reader.releaseLock() } catch (e) { } }
 	if (!hasData && retryFunc) await retryFunc();
@@ -5341,12 +5684,12 @@ async function nginx() {
 	<h1>Welcome to nginx!</h1>
 	<p>If you see this page, the nginx web server is successfully installed and
 	working. Further configuration is required.</p>
-	
+
 	<p>For online documentation and support please refer to
 	<a href="http://nginx.org/">nginx.org</a>.<br/>
 	Commercial support is available at
 	<a href="http://nginx.com/">nginx.com</a>.</p>
-	
+
 	<p><em>Thank you for using nginx.</em></p>
 	</body>
 	</html>
@@ -5399,24 +5742,24 @@ async function html1101(host, 访问IP) {
                 </h1>
                 <h2 class="cf-subheadline" data-translate="error_desc">Worker threw exception</h2>
             </div><!-- /.header -->
-    
+
             <section></section><!-- spacer -->
-    
+
             <div class="cf-section cf-wrapper">
                 <div class="cf-columns two">
                     <div class="cf-column">
                         <h2 data-translate="what_happened">What happened?</h2>
                             <p>You've requested a page on a website (${host}) that is on the <a href="https://www.cloudflare.com/5xx-error-landing?utm_source=error_100x" target="_blank">Cloudflare</a> network. An unknown error occurred while rendering the page.</p>
                     </div>
-                    
+
                     <div class="cf-column">
                         <h2 data-translate="what_can_i_do">What can I do?</h2>
                             <p><strong>If you are the owner of this website:</strong><br />refer to <a href="https://developers.cloudflare.com/workers/observability/errors/" target="_blank">Workers - Errors and Exceptions</a> and check Workers Logs for ${host}.</p>
                     </div>
-                    
+
                 </div>
             </div><!-- /.section -->
-    
+
             <div class="cf-error-footer cf-wrapper w-240 lg:w-full py-10 sm:py-4 sm:px-8 mx-auto text-center sm:text-left border-solid border-0 border-t border-gray-300">
     <p class="text-13">
       <span class="cf-footer-item sm:block sm:mb-1">Cloudflare Ray ID: <strong class="font-semibold"> ${随机字符串}</strong></span>
@@ -5428,7 +5771,7 @@ async function html1101(host, 访问IP) {
         <span class="cf-footer-separator sm:hidden">&bull;</span>
       </span>
       <span class="cf-footer-item sm:block sm:mb-1"><span>Performance &amp; security by</span> <a rel="noopener noreferrer" href="https://www.cloudflare.com/5xx-error-landing" id="brand_link" target="_blank">Cloudflare</a></span>
-      
+
     </p>
     <script>(function(){function d(){var b=a.getElementById("cf-footer-item-ip"),c=a.getElementById("cf-footer-ip-reveal");b&&"classList"in b&&(b.classList.remove("hidden"),c.addEventListener("click",function(){c.classList.add("hidden");a.getElementById("cf-footer-ip").classList.remove("hidden")}))}var a=document;document.addEventListener&&a.addEventListener("DOMContentLoaded",d)})();</script>
   </div><!-- /.error-footer -->
@@ -5438,9 +5781,9 @@ async function html1101(host, 访问IP) {
 
      <script>
     window._cf_translation = {};
-    
-    
-  </script> 
+
+
+  </script>
 </body>
 </html>`;
 }
