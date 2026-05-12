@@ -1,12 +1,9 @@
-﻿const Version = '2026-05-11 04:17:05';
-/*In our project workflow, we first*/ import //the necessary modules,
-/*then*/ { connect }//to the central server,
-/*and all data flows*/ from//this single source.
-	'cloudflare\u003asockets';
+﻿const Version = '2026-05-13 04:28:03';
 let config_JSON, 反代IP = '', 启用SOCKS5反代 = null, 启用SOCKS5全局反代 = false, 我的SOCKS5账号 = '', parsedSocks5Address = {};
 let 缓存反代IP, 缓存反代解析数组, 缓存反代数组索引 = 0, 启用反代兜底 = true, 调试日志打印 = false;
 let SOCKS5白名单 = ['*tapecontent.net', '*cloudatacdn.com', '*loadshare.org', '*cdn-centaurus.com', 'scholar.google.com'];
 const Pages静态页面 = 'https://edt-pages.github.io';
+///////////////////////////////////////////////////////全局常量和工具函数///////////////////////////////////////////////
 const WS早期数据最大字节 = 8 * 1024, WS早期数据最大头长度 = Math.ceil(WS早期数据最大字节 * 4 / 3) + 4;
 const 上行合包目标字节 = 16 * 1024, 上行队列最大字节 = 256 * 1024, 上行队列最大条目 = 上行队列最大字节 >> 8;
 const 下行Grain包字节 = 32 * 1024, 下行Grain尾部阈值 = 512, 下行Grain静默毫秒 = 1;
@@ -125,17 +122,18 @@ export default {
 							const 完整代理参数 = username && password ? `${username}:${password}@${hostname}:${port}` : `${hostname}:${port}`;
 							try {
 								const 检测主机 = 'cloudflare.com', 检测端口 = 443, encoder = new TextEncoder(), decoder = new TextDecoder();
+								const TCP连接 = 创建请求TCP连接器(request);
 								let tcpSocket = null, tlsSocket = null;
 								try {
 									tcpSocket = 代理协议 === 'socks5'
-										? await socks5Connect(检测主机, 检测端口, new Uint8Array(0))
+										? await socks5Connect(检测主机, 检测端口, new Uint8Array(0), TCP连接)
 										: 代理协议 === 'turn'
-											? await turnConnect(parsedSocks5Address, 检测主机, 检测端口)
+											? await turnConnect(parsedSocks5Address, 检测主机, 检测端口, TCP连接)
 											: 代理协议 === 'sstp'
-												? await sstpConnect(parsedSocks5Address, 检测主机, 检测端口)
+												? await sstpConnect(parsedSocks5Address, 检测主机, 检测端口, TCP连接)
 												: (代理协议 === 'https' && isIPHostname(hostname)
-													? await httpsConnect(检测主机, 检测端口, new Uint8Array(0))
-													: await httpConnect(检测主机, 检测端口, new Uint8Array(0), 代理协议 === 'https'));
+													? await httpsConnect(检测主机, 检测端口, new Uint8Array(0), TCP连接)
+													: await httpConnect(检测主机, 检测端口, new Uint8Array(0), 代理协议 === 'https', TCP连接));
 									if (!tcpSocket) throw new Error('无法连接到代理服务器');
 									tlsSocket = new TlsClient(tcpSocket, { serverName: 检测主机, insecure: true });
 									await tlsSocket.handshake();
@@ -597,10 +595,10 @@ async function 处理XHTTP请求(request, yourUUID) {
 			};
 
 			try {
-				if (首包.isUDP) {
-					if (首包.rawData?.byteLength) {
-						if (首包.协议 === 'trojan') await 转发木马UDP数据(首包.rawData, xhttpBridge, 木马UDP上下文);
-						else await forwardataudp(首包.rawData, xhttpBridge, udpRespHeader);
+					if (首包.isUDP) {
+						if (首包.rawData?.byteLength) {
+						if (首包.协议 === 'trojan') await 转发木马UDP数据(首包.rawData, xhttpBridge, 木马UDP上下文, request);
+						else await forwardataudp(首包.rawData, xhttpBridge, udpRespHeader, request);
 						udpRespHeader = null;
 					}
 				} else {
@@ -612,8 +610,8 @@ async function 处理XHTTP请求(request, yourUUID) {
 					if (done) break;
 					if (!value || value.byteLength === 0) continue;
 					if (首包.isUDP) {
-						if (首包.协议 === 'trojan') await 转发木马UDP数据(value, xhttpBridge, 木马UDP上下文);
-						else await forwardataudp(value, xhttpBridge, udpRespHeader);
+						if (首包.协议 === 'trojan') await 转发木马UDP数据(value, xhttpBridge, 木马UDP上下文, request);
+						else await forwardataudp(value, xhttpBridge, udpRespHeader, request);
 						udpRespHeader = null;
 					} else {
 						if (!(await 写入远端(value))) throw new Error('Remote socket is not ready');
@@ -838,6 +836,7 @@ async function 处理gRPC请求(request, yourUUID) {
 			let 发送队列 = [];
 			let 队列字节数 = 0;
 			let 刷新定时器 = null;
+			let 刷新Microtask已排队 = false;
 			const grpcBridge = {
 				readyState: WebSocket.OPEN,
 				send(data) {
@@ -863,8 +862,7 @@ async function 处理gRPC请求(request, yourUUID) {
 					frame.set(chunk, 6 + lenBytes.length);
 					发送队列.push(frame);
 					队列字节数 += frame.byteLength;
-					if (队列字节数 >= 下行缓存上限) 刷新发送队列();
-					else if (!刷新定时器) 刷新定时器 = setTimeout(刷新发送队列, 下行刷新间隔);
+					安排刷新发送队列();
 				},
 				close() {
 					if (this.readyState === WebSocket.CLOSED) return;
@@ -876,6 +874,7 @@ async function 处理gRPC请求(request, yourUUID) {
 			};
 
 			const 刷新发送队列 = (force = false) => {
+				刷新Microtask已排队 = false;
 				if (刷新定时器) {
 					clearTimeout(刷新定时器);
 					刷新定时器 = null;
@@ -895,6 +894,20 @@ async function 处理gRPC请求(request, yourUUID) {
 					已关闭 = true;
 					grpcBridge.readyState = WebSocket.CLOSED;
 				}
+			};
+
+			const 安排刷新发送队列 = () => {
+				if (队列字节数 >= 下行缓存上限) {
+					刷新发送队列();
+					return;
+				}
+				if (刷新Microtask已排队 || 刷新定时器) return;
+				刷新Microtask已排队 = true;
+				queueMicrotask(() => {
+					刷新Microtask已排队 = false;
+					if (已关闭 || 队列字节数 === 0 || 刷新定时器) return;
+					刷新定时器 = setTimeout(刷新发送队列, 下行刷新间隔);
+				});
 			};
 
 			const 关闭连接 = () => {
@@ -982,8 +995,8 @@ async function 处理gRPC请求(request, yourUUID) {
 						}
 						if (!payload.byteLength) continue;
 						if (isDnsQuery) {
-							if (判断是否是木马) await 转发木马UDP数据(payload, grpcBridge, 木马UDP上下文);
-							else await forwardataudp(payload, grpcBridge, null);
+							if (判断是否是木马) await 转发木马UDP数据(payload, grpcBridge, 木马UDP上下文, request);
+							else await forwardataudp(payload, grpcBridge, null, request);
 							continue;
 						}
 						if (remoteConnWrapper.socket) {
@@ -992,17 +1005,14 @@ async function 处理gRPC请求(request, yourUUID) {
 							const 首包bytes = 数据转Uint8Array(payload);
 							if (判断是否是木马 === null) 判断是否是木马 = 首包bytes.byteLength >= 58 && 首包bytes[56] === 0x0d && 首包bytes[57] === 0x0a;
 							if (判断是否是木马) {
-								const 首包buffer = 首包bytes.byteOffset === 0 && 首包bytes.byteLength === 首包bytes.buffer.byteLength
-									? 首包bytes.buffer
-									: 首包bytes.buffer.slice(首包bytes.byteOffset, 首包bytes.byteOffset + 首包bytes.byteLength);
-								const 解析结果 = 解析木马请求(首包buffer, yourUUID);
+								const 解析结果 = 解析木马请求(首包bytes, yourUUID);
 								if (解析结果?.hasError) throw new Error(解析结果.message || 'Invalid trojan request');
 								const { port, hostname, rawClientData, isUDP } = 解析结果;
 								log(`[gRPC] 木马首包: ${hostname}:${port} | UDP: ${isUDP ? '是' : '否'}`);
 								if (isSpeedTestSite(hostname)) throw new Error('Speedtest site is blocked');
 								if (isUDP) {
 									isDnsQuery = true;
-									if (有效数据长度(rawClientData) > 0) await 转发木马UDP数据(rawClientData, grpcBridge, 木马UDP上下文);
+									if (有效数据长度(rawClientData) > 0) await 转发木马UDP数据(rawClientData, grpcBridge, 木马UDP上下文, request);
 								} else {
 									await forwardataTCP(hostname, port, rawClientData, grpcBridge, null, remoteConnWrapper, yourUUID, request);
 								}
@@ -1021,8 +1031,8 @@ async function 处理gRPC请求(request, yourUUID) {
 								grpcBridge.send(respHeader);
 								const rawData = rawClientData;
 								if (isDnsQuery) {
-									if (判断是否是木马) await 转发木马UDP数据(rawData, grpcBridge, 木马UDP上下文);
-									else await forwardataudp(rawData, grpcBridge, null);
+									if (判断是否是木马) await 转发木马UDP数据(rawData, grpcBridge, 木马UDP上下文, request);
+									else await forwardataudp(rawData, grpcBridge, null, request);
 								}
 								else await forwardataTCP(hostname, port, rawData, grpcBridge, null, remoteConnWrapper, yourUUID, request);
 							}
@@ -1335,7 +1345,8 @@ async function 处理WS请求(request, yourUUID, url) {
 			let 已写入 = false;
 			try {
 				已写入 = await 写入远端(明文块, false);
-			} catch (_) {
+			} catch (err) {
+				if ((/** @type {any} */ (err))?.isQueueOverflow) throw err;
 				已写入 = false;
 			}
 			if (已写入) continue;
@@ -1384,8 +1395,8 @@ async function 处理WS请求(request, yourUUID, url) {
 	const 处理WS入站数据 = async (chunk) => {
 		let 当前块字节 = null;
 		if (isDnsQuery) {
-			if (判断是否是木马) return await 转发木马UDP数据(chunk, serverSock, 木马UDP上下文);
-			return await forwardataudp(chunk, serverSock, null);
+			if (判断是否是木马) return await 转发木马UDP数据(chunk, serverSock, 木马UDP上下文, request);
+			return await forwardataudp(chunk, serverSock, null, request);
 		}
 		if (判断协议类型 === 'ss') {
 			await 处理SS数据(chunk);
@@ -1416,7 +1427,7 @@ async function 处理WS请求(request, yourUUID, url) {
 			if (isSpeedTestSite(hostname)) throw new Error('Speedtest site is blocked');
 			if (isUDP) {
 				isDnsQuery = true;
-				if (有效数据长度(rawClientData) > 0) return 转发木马UDP数据(rawClientData, serverSock, 木马UDP上下文);
+				if (有效数据长度(rawClientData) > 0) return 转发木马UDP数据(rawClientData, serverSock, 木马UDP上下文, request);
 				return;
 			}
 			await forwardataTCP(hostname, port, rawClientData, serverSock, null, remoteConnWrapper, yourUUID, request);
@@ -1435,8 +1446,8 @@ async function 处理WS请求(request, yourUUID, url) {
 			const respHeader = new Uint8Array([version, 0]);
 			const rawData = rawClientData;
 			if (isDnsQuery) {
-				if (判断是否是木马) return 转发木马UDP数据(rawData, serverSock, 木马UDP上下文);
-				return forwardataudp(rawData, serverSock, respHeader);
+				if (判断是否是木马) return 转发木马UDP数据(rawData, serverSock, 木马UDP上下文, request);
+				return forwardataudp(rawData, serverSock, respHeader, request);
 			}
 			await forwardataTCP(hostname, port, rawData, serverSock, respHeader, remoteConnWrapper, yourUUID, request);
 		}
@@ -1516,42 +1527,49 @@ async function 处理WS请求(request, yourUUID, url) {
 	return new Response(null, { status: 101, webSocket: clientSock, headers: { 'Sec-WebSocket-Extensions': '' } });
 }
 
+const 木马文本解码器 = new TextDecoder();
+
 function 解析木马请求(buffer, passwordPlainText) {
+	const data = 数据转Uint8Array(buffer);
 	const sha224Password = sha224(passwordPlainText);
-	if (buffer.byteLength < 56) return { hasError: true, message: "invalid data" };
+	if (data.byteLength < 58) return { hasError: true, message: "invalid data" };
 	let crLfIndex = 56;
-	if (new Uint8Array(buffer.slice(56, 57))[0] !== 0x0d || new Uint8Array(buffer.slice(57, 58))[0] !== 0x0a) return { hasError: true, message: "invalid header format" };
-	const password = new TextDecoder().decode(buffer.slice(0, crLfIndex));
-	if (password !== sha224Password) return { hasError: true, message: "invalid password" };
+	if (data[crLfIndex] !== 0x0d || data[crLfIndex + 1] !== 0x0a) return { hasError: true, message: "invalid header format" };
+	for (let i = 0; i < crLfIndex; i++) {
+		if (data[i] !== sha224Password.charCodeAt(i)) return { hasError: true, message: "invalid password" };
+	}
 
-	const socks5DataBuffer = buffer.slice(crLfIndex + 2);
-	if (socks5DataBuffer.byteLength < 6) return { hasError: true, message: "invalid S5 request data" };
+	const socks5Index = crLfIndex + 2;
+	if (data.byteLength < socks5Index + 6) return { hasError: true, message: "invalid S5 request data" };
 
-	const view = new DataView(socks5DataBuffer);
-	const cmd = view.getUint8(0);
+	const cmd = data[socks5Index];
 	if (cmd !== 1 && cmd !== 3) return { hasError: true, message: "unsupported command, only TCP/UDP is allowed" };
 	const isUDP = cmd === 3;
 
-	const atype = view.getUint8(1);
+	const atype = data[socks5Index + 1];
 	let addressLength = 0;
-	let addressIndex = 2;
+	let addressIndex = socks5Index + 2;
 	let address = "";
 	switch (atype) {
 		case 1: // IPv4
 			addressLength = 4;
-			address = new Uint8Array(socks5DataBuffer.slice(addressIndex, addressIndex + addressLength)).join(".");
+			if (data.byteLength < addressIndex + addressLength + 4) return { hasError: true, message: "invalid S5 request data" };
+			address = `${data[addressIndex]}.${data[addressIndex + 1]}.${data[addressIndex + 2]}.${data[addressIndex + 3]}`;
 			break;
 		case 3: // Domain
-			addressLength = new Uint8Array(socks5DataBuffer.slice(addressIndex, addressIndex + 1))[0];
+			if (data.byteLength < addressIndex + 1) return { hasError: true, message: "invalid S5 request data" };
+			addressLength = data[addressIndex];
 			addressIndex += 1;
-			address = new TextDecoder().decode(socks5DataBuffer.slice(addressIndex, addressIndex + addressLength));
+			if (data.byteLength < addressIndex + addressLength + 4) return { hasError: true, message: "invalid S5 request data" };
+			address = 木马文本解码器.decode(data.subarray(addressIndex, addressIndex + addressLength));
 			break;
 		case 4: // IPv6
 			addressLength = 16;
-			const dataView = new DataView(socks5DataBuffer.slice(addressIndex, addressIndex + addressLength));
+			if (data.byteLength < addressIndex + addressLength + 4) return { hasError: true, message: "invalid S5 request data" };
 			const ipv6 = [];
 			for (let i = 0; i < 8; i++) {
-				ipv6.push(dataView.getUint16(i * 2).toString(16));
+				const partIndex = addressIndex + i * 2;
+				ipv6.push(((data[partIndex] << 8) | data[partIndex + 1]).toString(16));
 			}
 			address = ipv6.join(":");
 			break;
@@ -1564,8 +1582,8 @@ function 解析木马请求(buffer, passwordPlainText) {
 	}
 
 	const portIndex = addressIndex + addressLength;
-	const portBuffer = socks5DataBuffer.slice(portIndex, portIndex + 2);
-	const portRemote = new DataView(portBuffer).getUint16(0);
+	if (data.byteLength < portIndex + 4) return { hasError: true, message: "invalid S5 request data" };
+	const portRemote = (data[portIndex] << 8) | data[portIndex + 1];
 
 	return {
 		hasError: false,
@@ -1573,7 +1591,7 @@ function 解析木马请求(buffer, passwordPlainText) {
 		port: portRemote,
 		hostname: address,
 		isUDP,
-		rawClientData: socks5DataBuffer.slice(portIndex + 4)
+		rawClientData: data.subarray(portIndex + 4)
 	};
 }
 
@@ -1693,7 +1711,7 @@ function 拼接字节数据(...chunkList) {
 	return result;
 }
 
-async function 转发木马UDP数据(chunk, webSocket, 上下文) {
+async function 转发木马UDP数据(chunk, webSocket, 上下文, request) {
 	const 当前块 = 数据转Uint8Array(chunk);
 	const 缓存块 = 上下文?.缓存 instanceof Uint8Array ? 上下文.缓存 : new Uint8Array(0);
 	const input = 缓存块.byteLength ? 拼接字节数据(缓存块, 当前块) : 当前块;
@@ -1738,7 +1756,7 @@ async function 转发木马UDP数据(chunk, webSocket, 上下文) {
 		}
 
 		const dns响应上下文 = { 缓存: new Uint8Array(0) };
-		await forwardataudp(tcpDNS查询, webSocket, null, (dnsRespChunk) => {
+		await forwardataudp(tcpDNS查询, webSocket, null, request, (dnsRespChunk) => {
 			const 当前响应块 = 数据转Uint8Array(dnsRespChunk);
 			const 响应输入 = dns响应上下文.缓存.byteLength ? 拼接字节数据(dns响应上下文.缓存, 当前响应块) : 当前响应块;
 			const 响应帧列表 = [];
@@ -1825,11 +1843,7 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
 	log(`[TCP转发] 目标: ${host}:${portNum} | 反代IP: ${反代IP} | 反代兜底: ${启用反代兜底 ? '是' : '否'} | 反代类型: ${启用SOCKS5反代 || 'proxyip'} | 全局: ${启用SOCKS5全局反代 ? '是' : '否'}`);
 	const 连接超时毫秒 = 1000;
 	let 已通过代理发送首包 = false;
-	let 请求FetcherConnect = null, fetcherConnect失败已记录 = false;
-	try {
-		const 请求Fetcher = request?.fetcher;
-		if (请求Fetcher && typeof 请求Fetcher.connect === 'function') 请求FetcherConnect = 请求Fetcher.connect.bind(请求Fetcher);
-	} catch (e) { }
+	const TCP连接 = 创建请求TCP连接器(request);
 
 	async function 等待连接建立(remoteSock, timeoutMs = 连接超时毫秒) {
 		await Promise.race([
@@ -1839,21 +1853,7 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
 	}
 
 	async function 打开TCP连接(address, port) {
-		if (请求FetcherConnect) {
-			let fetcherSock = null;
-			try {
-				fetcherSock = 请求FetcherConnect({ hostname: address, port });
-				await 等待连接建立(fetcherSock);
-				return fetcherSock;
-			} catch (err) {
-				try { fetcherSock?.close?.() } catch (e) { }
-				if (!fetcherConnect失败已记录) {
-					fetcherConnect失败已记录 = true;
-					log(`[TCP拨号] request.fetcher.connect 不可用或连接失败，回退 connect(): ${err?.message || err}`);
-				}
-			}
-		}
-		const remoteSock = connect({ hostname: address, port });
+		const remoteSock = TCP连接({ hostname: address, port });
 		try {
 			await 等待连接建立(remoteSock);
 			return remoteSock;
@@ -1951,18 +1951,18 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
 			let newSocket;
 			if (启用SOCKS5反代 === 'socks5') {
 				log(`[SOCKS5代理] 代理到: ${host}:${portNum}`);
-				newSocket = await socks5Connect(host, portNum, 本次首包数据);
+				newSocket = await socks5Connect(host, portNum, 本次首包数据, TCP连接);
 			} else if (启用SOCKS5反代 === 'http') {
 				log(`[HTTP代理] 代理到: ${host}:${portNum}`);
-				newSocket = await httpConnect(host, portNum, 本次首包数据);
+				newSocket = await httpConnect(host, portNum, 本次首包数据, false, TCP连接);
 			} else if (启用SOCKS5反代 === 'https') {
 				log(`[HTTPS代理] 代理到: ${host}:${portNum}`);
 				newSocket = isIPHostname(parsedSocks5Address.hostname)
-					? await httpsConnect(host, portNum, 本次首包数据)
-					: await httpConnect(host, portNum, 本次首包数据, true);
+					? await httpsConnect(host, portNum, 本次首包数据, TCP连接)
+					: await httpConnect(host, portNum, 本次首包数据, true, TCP连接);
 			} else if (启用SOCKS5反代 === 'turn') {
 				log(`[TURN代理] 代理到: ${host}:${portNum}`);
-				newSocket = await turnConnect(parsedSocks5Address, host, portNum);
+				newSocket = await turnConnect(parsedSocks5Address, host, portNum, TCP连接);
 				if (有效数据长度(本次首包数据) > 0) {
 					const writer = newSocket.writable.getWriter();
 					try { await writer.write(数据转Uint8Array(本次首包数据)) }
@@ -1970,7 +1970,7 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
 				}
 			} else if (启用SOCKS5反代 === 'sstp') {
 				log(`[SSTP代理] 代理到: ${host}:${portNum}`);
-				newSocket = await sstpConnect(parsedSocks5Address, host, portNum);
+				newSocket = await sstpConnect(parsedSocks5Address, host, portNum, TCP连接);
 				if (有效数据长度(本次首包数据) > 0) {
 					const writer = newSocket.writable.getWriter();
 					try { await writer.write(数据转Uint8Array(本次首包数据)) }
@@ -2022,12 +2022,13 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
 	}
 }
 
-async function forwardataudp(udpChunk, webSocket, respHeader, 响应封装器 = null) {
+async function forwardataudp(udpChunk, webSocket, respHeader, request, 响应封装器 = null) {
 	const 请求数据 = 数据转Uint8Array(udpChunk);
 	const 请求字节数 = 请求数据.byteLength;
 	log(`[UDP转发] 收到 DNS 请求: ${请求字节数}B -> 8.8.4.4:53`);
 	try {
-		const tcpSocket = connect({ hostname: '8.8.4.4', port: 53 });
+		const TCP连接 = 创建请求TCP连接器(request);
+		const tcpSocket = TCP连接({ hostname: '8.8.4.4', port: 53 });
 		let 魏烈思Header = respHeader;
 		const writer = tcpSocket.writable.getWriter();
 		await writer.write(请求数据);
@@ -2186,13 +2187,14 @@ function 创建上行写入队列({ 获取写入器, 释放写入器, 重试连�
 	return {
 		写入(data, allowRetry = true) {
 			if (closed) return false;
+			// 首包解析阶段 socket 可能尚未建立；返回 false 交给上层继续走协议解析路径。
 			if (!获取写入器()) return false;
 			const chunk = 数据转Uint8Array(data);
 			if (!chunk.byteLength) return true;
 			if (queuedBytes + chunk.byteLength > 上行队列最大字节 || chunks.length - head >= 上行队列最大条目) {
 				closed = true;
 				clear();
-				const err = new Error(`${名称}: upload queue overflow`);
+				const err = Object.assign(new Error(`${名称}: upload queue overflow`), { isQueueOverflow: true });
 				log(`[${名称}] 队列超限，关闭连接`);
 				try { 关闭连接?.(err) } catch (_) { }
 				throw err;
@@ -2370,9 +2372,9 @@ function isSpeedTestSite(hostname) {
 }
 
 ///////////////////////////////////////////////////////SOCKS5/HTTP函数///////////////////////////////////////////////
-async function socks5Connect(targetHost, targetPort, initialData) {
+async function socks5Connect(targetHost, targetPort, initialData, TCP连接) {
 	const { username, password, hostname, port } = parsedSocks5Address;
-	const socket = connect({ hostname, port }), writer = socket.writable.getWriter(), reader = socket.readable.getReader();
+	const socket = TCP连接({ hostname, port }), writer = socket.writable.getWriter(), reader = socket.readable.getReader();
 	try {
 		const authMethods = username && password ? new Uint8Array([0x05, 0x02, 0x00, 0x02]) : new Uint8Array([0x05, 0x01, 0x00]);
 		await writer.write(authMethods);
@@ -2406,11 +2408,11 @@ async function socks5Connect(targetHost, targetPort, initialData) {
 	}
 }
 
-async function httpConnect(targetHost, targetPort, initialData, HTTPS代理 = false) {
+async function httpConnect(targetHost, targetPort, initialData, HTTPS代理 = false, TCP连接) {
 	const { username, password, hostname, port } = parsedSocks5Address;
 	const socket = HTTPS代理
-		? connect({ hostname, port }, { secureTransport: 'on', allowHalfOpen: false })
-		: connect({ hostname, port });
+		? TCP连接({ hostname, port }, { secureTransport: 'on', allowHalfOpen: false })
+		: TCP连接({ hostname, port });
 	const writer = socket.writable.getWriter(), reader = socket.readable.getReader();
 	const encoder = new TextEncoder();
 	const decoder = new TextDecoder();
@@ -2464,14 +2466,14 @@ async function httpConnect(targetHost, targetPort, initialData, HTTPS代理 = fa
 	}
 }
 
-async function httpsConnect(targetHost, targetPort, initialData) {
+async function httpsConnect(targetHost, targetPort, initialData, TCP连接) {
 	const { username, password, hostname, port } = parsedSocks5Address;
 	const encoder = new TextEncoder();
 	const decoder = new TextDecoder();
 	let tlsSocket = null;
 	const tlsServerName = isIPHostname(hostname) ? '' : stripIPv6Brackets(hostname);
 	const 打开HTTPS代理TLS = async (allowChacha = false) => {
-		const proxySocket = connect({ hostname, port });
+		const proxySocket = TCP连接({ hostname, port });
 		try {
 			await proxySocket.opened;
 			const socket = new TlsClient(proxySocket, { serverName: tlsServerName, insecure: true, allowChacha });
@@ -2565,6 +2567,12 @@ async function httpsConnect(targetHost, targetPort, initialData) {
 	}
 }
 
+function 创建请求TCP连接器(request) {
+	const 请求对象 = /** @type {any} */ (request);
+	const fetcher = 请求对象?.fetcher;
+	if (!fetcher || typeof fetcher.connect !== 'function') throw new Error('request.fetcher.connect unavailable');
+	return (options, init) => init === undefined ? fetcher.connect(options) : fetcher.connect(options, init);
+}
 ////////////////////////////////////////////TLSClient by: @Alexandre_Kojeve////////////////////////////////////////////////
 const TLS_VERSION_10 = 769, TLS_VERSION_12 = 771, TLS_VERSION_13 = 772;
 const CONTENT_TYPE_CHANGE_CIPHER_SPEC = 20, CONTENT_TYPE_ALERT = 21, CONTENT_TYPE_HANDSHAKE = 22, CONTENT_TYPE_APPLICATION_DATA = 23;
@@ -3366,7 +3374,7 @@ async function writeTurnBytes(writer, bytes, timeoutMessage) {
 	await withTimeout(writer.write(bytes), CONNECT_TIMEOUT_MS, timeoutMessage);
 }
 
-async function turnConnect(proxy, targetHost, targetPort) {
+async function turnConnect(proxy, targetHost, targetPort, TCP连接) {
 	proxy = { ...proxy, username: proxy.username ?? null, password: proxy.password ?? null };
 	const resolvedTargetHost = stripIPv6Brackets(targetHost);
 	/** @type {string | null} */
@@ -3391,7 +3399,7 @@ async function turnConnect(proxy, targetHost, targetPort) {
 	};
 
 	try {
-		controlSocket = connect({ hostname: turnHost, port: proxy.port });
+		controlSocket = TCP连接({ hostname: turnHost, port: proxy.port });
 		await withTimeout(controlSocket.opened, CONNECT_TIMEOUT_MS, 'TURN server connection timed out');
 		controlWriter = controlSocket.writable.getWriter();
 		controlReader = controlSocket.readable.getReader();
@@ -3465,7 +3473,7 @@ async function turnConnect(proxy, targetHost, targetPort) {
 			throw new Error(errorCode ? `TURN Allocate failed with ${errorCode}` : 'TURN Allocate failed');
 		}
 
-		dataSocket = connect({ hostname: turnHost, port: proxy.port });
+		dataSocket = TCP连接({ hostname: turnHost, port: proxy.port });
 		turnResponse = await readTurnStunMessage(controlReader, bufferedData, 'TURN CreatePermission response timed out');
 		message = turnResponse.message;
 		bufferedData = turnResponse.extraData;
@@ -3553,7 +3561,7 @@ function internetChecksum(bytes, offset, length) {
 	return (~sum) & 0xffff;
 }
 
-async function sstpConnect(proxy, targetHost, targetPort) {
+async function sstpConnect(proxy, targetHost, targetPort, TCP连接) {
 	proxy = { ...proxy, username: proxy.username ?? null, password: proxy.password ?? null };
 	let bufferedBytes = SSTP_EMPTY_BYTES, pppIdentifier = 1, socket = null, reader = null, writer = null;
 	let closedSettled = false, resolveClosed, rejectClosed;
@@ -3656,7 +3664,7 @@ async function sstpConnect(proxy, targetHost, targetPort) {
 	try {
 		const serverHost = stripIPv6Brackets(proxy.hostname);
 		const serverPort = proxy.port;
-		socket = connect({ hostname: serverHost, port: serverPort }, { secureTransport: 'on', allowHalfOpen: false });
+		socket = TCP连接({ hostname: serverHost, port: serverPort }, { secureTransport: 'on', allowHalfOpen: false });
 		await withTimeout(socket.opened, CONNECT_TIMEOUT_MS, 'SSTP server connection timed out');
 		reader = socket.readable.getReader();
 		writer = socket.writable.getWriter();
