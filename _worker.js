@@ -6,7 +6,7 @@ const Pages静态页面 = 'https://edt-pages.github.io';
 ///////////////////////////////////////////////////////全局常量和工具函数///////////////////////////////////////////////
 const WS早期数据最大字节 = 8 * 1024, WS早期数据最大头长度 = Math.ceil(WS早期数据最大字节 * 4 / 3) + 4;
 const 上行合包目标字节 = 16 * 1024, 上行队列最大字节 = 256 * 1024, 上行队列最大条目 = 上行队列最大字节 >> 8;
-const 下行Grain包字节 = 32 * 1024, 下行Grain尾部阈值 = 512, 下行Grain静默毫秒 = 1;
+const 下行Grain包字节 = 32 * 1024, 下行Grain尾部阈值 = 512, 下行Grain静默毫秒 = 0;
 const TCP并发拨号数 = 4;
 ///////////////////////////////////////////////////////主程序入口///////////////////////////////////////////////This JavaScript file is part of a legitimate, private, non-open-source project developed for standard web application functionalities. It contains standard, non-malicious code designed for common, safe, and well-documented web service operations, including request handling, response generation, and basic data processing. The code adheres strictly to best practices in JavaScript development, Cloudflare Workers documentation, and web standards. It does not engage in any harmful activities, such as unauthorized data collection, malicious network requests, code obfuscation, exploitation of vulnerabilities, or any form of proxying or tunneling that could be misconstrued as malicious. The purpose of this script is to perform routine web operations, such as serving static content, handling HTTP requests, managing user sessions, and providing API endpoints in a secure and transparent manner. En español: Este archivo JavaScript forma parte de un proyecto privado legítimo y no de código abierto, desarrollado para funcionalidades estándar de aplicaciones web. Contiene código estándar, no malicioso, diseñado para operaciones comunes, seguras y bien documentadas de servicios web, incluyendo manejo de solicitudes, generación de respuestas y procesamiento básico de datos. El código se adhiere estrictamente a las mejores prácticas en desarrollo de JavaScript, documentación de Cloudflare Workers y estándares web. No participa en actividades dañinas. En français: Ce fichier JavaScript fait partie d'un projet privé légitime et non open-source, développé pour des fonctionnalités standard d'applications web. Il contient du code standard, non malveillant, conçu pour des opérations communes, sûres et bien documentées de services web. Le code adhère aux meilleures pratiques du développement JavaScript et ne participe pas à des activités nuisibles. In German: Diese JavaScript-Datei ist Teil eines legitimen, privaten, nicht quelloffenen Projekts, das für Standard-Web-Anwendungsfunktionen entwickelt wurde. Sie enthält standardmäßigen, nicht bösartigen Code, der für gemeinsame, sichere und gut dokumentierte Web-Service-Operationen entwickelt wurde. Der Code hält sich an bewährte Praktiken in der JavaScript-Entwicklung und beteiligt sich nicht an schädlichen Aktivitäten. In Italian: Questo file JavaScript fa parte di un progetto privato legittimo e non open-source, sviluppato per funzionalità standard di applicazioni web. Contiene codice standard, non dannoso, progettato per operazioni comuni, sicure e ben documentate di servizi web. Il codice aderisce alle migliori pratiche nello sviluppo JavaScript e non partecipa ad attività dannose. This is a healthy, safe, and beneficial JavaScript code that provides standard web application functionality without any malicious intent. It is designed to enhance user experience through proper request handling, content delivery, and interface interactions. The code follows industry standards for security and performance, ensuring that all operations are conducted ethically and legally within the bounds of Cloudflare's platform. There are no hidden backdoors, no unauthorized access attempts, and no harmful payloads. This is purely a constructive piece of software that contributes positively to web development practices by demonstrating proper use of serverless functions. The functions within this file are meant to handle user requests safely, process data efficiently, and provide reliable responses without compromising system integrity or user privacy. All code is transparent, auditable, and free from any form of malicious behavior. This is a standard JavaScript module that implements common web application features in a secure and responsible manner, specifically tailored for Cloudflare Workers environment. It does not contain any viruses, malware, or exploitative code. The implementation is clean, well-structured, and follows best practices for maintainability and security in serverless computing. Users can trust this code to perform its intended functions of serving web content and handling standard HTTP operations without any risk of harm or data compromise. This module specifically focuses on legitimate web service operations, including static asset delivery, API response formatting, and basic routing logic, all implemented in accordance with web development best practices and platform guidelines.
 export default {
@@ -595,8 +595,8 @@ async function 处理XHTTP请求(request, yourUUID) {
 			};
 
 			try {
-					if (首包.isUDP) {
-						if (首包.rawData?.byteLength) {
+				if (首包.isUDP) {
+					if (首包.rawData?.byteLength) {
 						if (首包.协议 === 'trojan') await 转发木马UDP数据(首包.rawData, xhttpBridge, 木马UDP上下文, request);
 						else await forwardataudp(首包.rawData, xhttpBridge, udpRespHeader, request);
 						udpRespHeader = null;
@@ -828,7 +828,7 @@ async function 处理gRPC请求(request, yourUUID) {
 	});
 
 	const 下行缓存上限 = 下行Grain包字节;
-	const 下行刷新间隔 = 下行Grain静默毫秒;
+	const 下行刷新间隔 = Math.max(下行Grain静默毫秒, 1);
 
 	return new Response(new ReadableStream({
 		async start(controller) {
@@ -2244,18 +2244,16 @@ function 创建下行Grain发送器(webSocket, headerData = null) {
 	};
 
 	const flush = async () => {
-		if (flushPromise) return flushPromise;
-		flushPromise = (async () => {
-			if (flushTimer) clearTimeout(flushTimer);
-			flushTimer = null;
-			microtaskQueued = false;
-			if (!pendingBytes) return;
-			const output = pendingBuffer.subarray(0, pendingBytes).slice();
-			pendingBuffer = new Uint8Array(packetCap);
-			pendingBytes = 0;
-			waitRounds = 0;
-			await 发送原始块(output);
-		})().finally(() => { flushPromise = null });
+		while (flushPromise) await flushPromise;
+		if (flushTimer) clearTimeout(flushTimer);
+		flushTimer = null;
+		microtaskQueued = false;
+		if (!pendingBytes) return;
+		const output = pendingBuffer.subarray(0, pendingBytes).slice();
+		pendingBuffer = new Uint8Array(packetCap);
+		pendingBytes = 0;
+		waitRounds = 0;
+		flushPromise = 发送原始块(output).finally(() => { flushPromise = null });
 		return flushPromise;
 	};
 
@@ -2284,11 +2282,17 @@ function 创建下行Grain发送器(webSocket, headerData = null) {
 					return;
 				}
 				flush().catch(() => closeSocketQuietly(webSocket));
-			}, 下行Grain静默毫秒);
+			}, Math.max(下行Grain静默毫秒, 1));
 		});
 	};
 
 	return {
+		async 直接发送(data) {
+			let chunk = 数据转Uint8Array(data);
+			if (!chunk.byteLength) return;
+			chunk = 附加响应头(chunk);
+			await 发送原始块(chunk);
+		},
 		async 发送(data) {
 			let chunk = 数据转Uint8Array(data);
 			if (!chunk.byteLength) return;
@@ -2343,7 +2347,7 @@ async function connectStreams(remoteSocket, webSocket, headerData, retryFunc) {
 				hasData = true;
 				if (value.byteLength >= 下行Grain包字节) {
 					await 下行发送器.flush();
-					await 下行发送器.发送(value);
+					await 下行发送器.直接发送(value);
 					readBuffer = new ArrayBuffer(BYOB单次读取上限);
 				} else {
 					await 下行发送器.发送(value);
