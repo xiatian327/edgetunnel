@@ -74,7 +74,7 @@ export default {
 						if (输入密码 === (typeof 管理员密码 === 'string' ? 管理员密码.replace(/[\r\n]/g, '') : 管理员密码)) {
 							// 密码正确，设置cookie并返回成功标记
 							const 响应 = new Response(JSON.stringify({ success: true }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
-							响应.headers.set('Set-Cookie', `auth=${await MD5MD5(UA + 加密秘钥 + 管理员密码)}; Path=/; Max-Age=86400; HttpOnly`);
+							响应.headers.set('Set-Cookie', `auth=${await MD5MD5(UA + 加密秘钥 + 管理员密码)}; Path=/; Max-Age=86400; HttpOnly; Secure; SameSite=Strict`);
 							return 响应;
 						}
 					}
@@ -4691,7 +4691,7 @@ async function DoH查询(域名, 记录类型, DoH解析服务 = "https://cloudf
 		const qname = 编码域名(域名);
 		const query = new Uint8Array(12 + qname.length + 4);
 		const qview = new DataView(query.buffer);
-		qview.setUint16(0, 0);       // ID
+		qview.setUint16(0, crypto.getRandomValues(new Uint16Array(1))[0]); // ID (random per RFC 1035)
 		qview.setUint16(2, 0x0100);  // Flags: RD=1 (递归查询)
 		qview.setUint16(4, 1);       // QDCOUNT
 		query.set(qname, 12);
